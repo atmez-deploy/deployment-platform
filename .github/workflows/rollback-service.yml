@@ -1,0 +1,57 @@
+name: Rollback service (VPS Docker blue/green)
+
+# Switch a service's live traffic back to the previous color (the prior container
+# is kept until the next successful deploy). Nginx upstream switch only.
+#
+# Required repository secrets:
+#   DEPLOY_SSH_KEY   SSH private key for the VPS deploy user
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Path to project config
+        required: true
+        default: examples/example-app.project.yaml
+      registry:
+        description: Path to resource registry
+        required: true
+        default: config/registry.example.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: staging
+      service:
+        description: Service name (e.g. backend)
+        required: true
+        default: backend
+      execute:
+        description: Actually run (false = dry run)
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-service-${{ github.event.inputs.config }}-${{ github.event.inputs.environment }}-${{ github.event.inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Rollback service
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          EXECUTE=""
+          if [ "${{ github.event.inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node engine/cli.mjs rollback-service \
+            --config "${{ github.event.inputs.config }}" \
+            --env "${{ github.event.inputs.environment }}" \
+            --service "${{ github.event.inputs.service }}" \
+            --registry "${{ github.event.inputs.registry }}" \
+            $EXECUTE

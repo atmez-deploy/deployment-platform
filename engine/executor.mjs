@@ -28,13 +28,19 @@ function sshBase(conn, keyPath) {
 }
 
 /**
- * Turn a plan into an ordered list of concrete commands.
- * @param {object} plan  from static-hostinger planDeploy/planRollback
- * @param {object} conn  connection (host, port, username, webroot, auth, transfer)
+ * Turn a plan into an ordered list of concrete commands. Dispatches by plan.driver.
+ * @param {object} plan  a driver plan (static-hostinger or docker-vps)
+ * @param {object} conn  connection (host, port, username, ...)
  * @param {object} [opts] { keyPath, localDir } — keyPath is the ssh identity file path
  * @returns {{label:string, bin:string, args:string[]}[]}
  */
 export function toCommands(plan, conn, opts = {}) {
+  if (plan.driver === "docker-vps") return dockerVpsToCommands(plan, conn, opts);
+  return staticToCommands(plan, conn, opts);
+}
+
+/** Compile static-hostinger plans to ssh/rsync/lftp commands. */
+function staticToCommands(plan, conn, opts = {}) {
   const { keyPath } = opts;
   const commands = [];
 
@@ -134,6 +140,134 @@ export function toCommands(plan, conn, opts = {}) {
     }
   }
 
+  return commands;
+}
+
+/**
+ * Compile docker-vps blue/green plans to ssh + docker commands.
+ * The active color is resolved on the VPS at run time via a marker file; for the
+ * dry run / command view we express that as a shell expression the remote evaluates.
+ */
+function dockerVpsToCommands(plan, conn, opts = {}) {
+  const { keyPath } = opts;
+  const commands = [];
+  const id = plan.identity;
+
+  // Remote shell snippet that echoes the CURRENT live color (default blue), and the IDLE
+  // color = the other one. We compute both into shell vars the remote reuses per command.
+  const readColors =
+    `CUR=$(cat ${shq(id.markerPath)} 2>/dev/null || echo blue); ` +
+    `if [ "$CUR" = blue ]; then IDLE=green; else IDLE=blue; fi`;
+
+  const containerFor = (colorVar) =>
+    // e.g. example-app-staging-backend-$IDLE
+    `${id.project}-${id.environment}-${id.service}-$${colorVar}`;
+
+  for (const step of plan.steps) {
+    const s = sshBase(conn, keyPath);
+    switch (step.type) {
+      case "determine_active":
+        commands.push({
+          label: "determine_active (read live color marker)",
+          bin: s.bin,
+          args: [...s.args, s.dest, `${readColors}; echo "live=$CUR idle=$IDLE"`],
+        });
+        break;
+      case "ensure_network":
+        commands.push({
+          label: `ensure_network ${step.network}`,
+          bin: s.bin,
+          args: [...s.args, s.dest, `docker network inspect ${shq(step.network)} >/dev/null 2>&1 || docker network create ${shq(step.network)}`],
+        });
+        break;
+      case "pull":
+        commands.push({
+          label: `pull ${step.image}`,
+          bin: s.bin,
+          args: [...s.args, s.dest, `docker pull ${shq(step.image)}`],
+        });
+        break;
+      case "run_container": {
+        const name = containerFor("IDLE");
+        const run =
+          `${readColors}; ` +
+          `docker rm -f ${name} >/dev/null 2>&1 || true; ` +
+          `docker run -d --name ${name} --network ${shq(step.network)} ` +
+          `-p 127.0.0.1:${step.port}:${step.port} --restart unless-stopped ${shq(step.image)}`;
+        commands.push({ label: "run_container (idle color)", bin: s.bin, args: [...s.args, s.dest, run] });
+        break;
+      }
+      case "migrate": {
+        const name = containerFor("IDLE");
+        const cmd = `${readColors}; docker exec ${name} sh -lc ${shq(step.command)}`;
+        commands.push({ label: "migrate (in new container)", bin: s.bin, args: [...s.args, s.dest, cmd] });
+        break;
+      }
+      case "health_check": {
+        const probe =
+          `for i in $(seq 1 ${step.retries + 1}); do ` +
+          `code=$(curl -s -o /dev/null -w '%{http_code}' --max-time ${step.timeoutSeconds} ` +
+          `http://127.0.0.1:${step.port}${step.path} || true); ` +
+          `if [ "$code" = "${step.expectStatus}" ]; then echo healthy; exit 0; fi; sleep 2; done; ` +
+          `echo unhealthy; exit 1`;
+        commands.push({ label: `health_check ${step.path}`, bin: s.bin, args: [...s.args, s.dest, probe] });
+        break;
+      }
+      case "nginx_write": {
+        // write the rendered config via a heredoc, guarding the marker on the content
+        const write = `cat > ${shq(step.confPath)} <<'ATMEZEOF'\n${step.content}ATMEZEOF`;
+        commands.push({ label: `nginx_write ${step.confPath}`, bin: s.bin, args: [...s.args, s.dest, write] });
+        break;
+      }
+      case "nginx_reload":
+        commands.push({
+          label: "nginx_reload (test + reload)",
+          bin: s.bin,
+          args: [...s.args, s.dest, `nginx -t && (systemctl reload nginx || nginx -s reload)`],
+        });
+        break;
+      case "verify_live":
+        commands.push({
+          label: `verify_live ${step.domain}`,
+          bin: s.bin,
+          args: [
+            ...s.args,
+            s.dest,
+            `code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ${step.domain}' http://127.0.0.1/ || true); ` +
+              `[ "$code" = "${step.expectStatus}" ] || (echo "got $code"; exit 1)`,
+          ],
+        });
+        break;
+      case "write_active_marker": {
+        // after a successful switch, the live color becomes the previously-idle one
+        const cmd = `${readColors}; mkdir -p "$(dirname ${shq(step.markerPath)})"; echo "$IDLE" > ${shq(step.markerPath)}`;
+        commands.push({ label: "write_active_marker", bin: s.bin, args: [...s.args, s.dest, cmd] });
+        break;
+      }
+      case "assert_other_exists": {
+        const other = containerFor("IDLE");
+        commands.push({
+          label: "assert_other_exists (previous color container running)",
+          bin: s.bin,
+          args: [...s.args, s.dest, `${readColors}; docker ps --format '{{.Names}}' | grep -qx ${other} || (echo "previous container missing"; exit 1)`],
+        });
+        break;
+      }
+      case "stop_old": {
+        // Runs AFTER write_active_marker, so the marker already holds the NEW live color.
+        // The container to stop is therefore the OTHER color relative to the marker.
+        const old = `${id.project}-${id.environment}-${id.service}-$OLD`;
+        const cmd =
+          `LIVE=$(cat ${shq(id.markerPath)} 2>/dev/null || echo blue); ` +
+          `if [ "$LIVE" = blue ]; then OLD=green; else OLD=blue; fi; ` +
+          `docker stop ${old} >/dev/null 2>&1 || true; docker rm ${old} >/dev/null 2>&1 || true`;
+        commands.push({ label: "stop_old (previous color)", bin: s.bin, args: [...s.args, s.dest, cmd] });
+        break;
+      }
+      default:
+        throw new Error(`unknown docker-vps step type: ${step.type}`);
+    }
+  }
   return commands;
 }
 

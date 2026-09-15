@@ -1,0 +1,66 @@
+name: Deploy service (VPS Docker blue/green)
+
+# Deploy a containerized service (backend/web/worker) to a VPS using blue/green.
+# The image is expected to already be built and pushed to a registry (e.g. GHCR)
+# by the project's own CI; this workflow performs the deployment only.
+#
+# Required repository secrets:
+#   DEPLOY_SSH_KEY   SSH private key for the VPS deploy user
+#
+# The registry file (config/registry*.yaml) must already have this project+env
+# registered (so a port + domain are allocated).
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Path to project config
+        required: true
+        default: examples/example-app.project.yaml
+      registry:
+        description: Path to resource registry
+        required: true
+        default: config/registry.example.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: staging
+      service:
+        description: Service name (e.g. backend)
+        required: true
+        default: backend
+      image:
+        description: Immutable image reference (…@sha256 or :tag)
+        required: true
+      execute:
+        description: Actually run (false = dry run)
+        type: boolean
+        default: false
+
+concurrency:
+  # one deploy per project+env+service at a time (mirrors the VPS deploy lock)
+  group: deploy-service-${{ github.event.inputs.config }}-${{ github.event.inputs.environment }}-${{ github.event.inputs.service }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Deploy service
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          EXECUTE=""
+          if [ "${{ github.event.inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node engine/cli.mjs deploy-service \
+            --config "${{ github.event.inputs.config }}" \
+            --env "${{ github.event.inputs.environment }}" \
+            --service "${{ github.event.inputs.service }}" \
+            --registry "${{ github.event.inputs.registry }}" \
+            --image "${{ github.event.inputs.image }}" \
+            $EXECUTE
