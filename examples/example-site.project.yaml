@@ -1,0 +1,41 @@
+# Example instance: a STATIC website built in CI and published to Hostinger
+# over SSH/rsync into public_html, with atomic release + symlink swap.
+# SSL is managed by the provider (hPanel), not by the platform.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-site
+  description: Generic static marketing site
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-site
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: hostinger
+      host: 123.45.67.89
+      port: 65002
+      username: u123456789
+      auth: ssh_key
+      webroot: public_html
+      transfer: rsync
+      secret_ref: example_site_hostinger_ssh_key
+    build:
+      command: npm ci && npm run build
+      output_dir: dist
+      node_version: "20"
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: www.example.com
+          ssl: managed_by_provider
+        release_strategy: symlink

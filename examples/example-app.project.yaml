@@ -1,0 +1,87 @@
+# Example instance: a docker (backend + web) project deployed to our own VPS
+# with blue/green. This is a GENERIC example — no real project name is used, to
+# keep the schema project-agnostic (architecture Rule 1).
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-app
+  description: Generic backend + web application
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-app
+  default_branch: main
+
+# Values inherited by every environment unless overridden.
+defaults:
+  user:
+    name: deploy-example-app
+    ssh_key_ref: example_app_vps_ssh_key
+
+environments:
+
+  staging:
+    deployment:
+      type: docker
+      strategy: blue_green
+    target:
+      driver: vps
+      ref: vps-01
+    database:
+      name: example_app_staging
+      migrate: true
+    services:
+      backend:
+        image: ghcr.io/example-org/example-app-backend
+        exposure:
+          type: domain
+          domain: api.staging.example.com
+          ssl: true
+        health:
+          path: /api/health
+          expect_status: 200
+        env_refs:
+          - example_app_staging_backend_env
+      web:
+        image: ghcr.io/example-org/example-app-web
+        exposure:
+          type: domain
+          domain: staging.example.com
+          ssl: true
+        health:
+          path: /
+          expect_status: 200
+
+  production:
+    deployment:
+      type: docker
+      strategy: blue_green
+    target:
+      driver: vps
+      ref: vps-01
+    database:
+      name: example_app_production
+      migrate: true
+    services:
+      backend:
+        image: ghcr.io/example-org/example-app-backend
+        exposure:
+          type: domain
+          domain: api.example.com
+          ssl: true
+        health:
+          path: /api/health
+          expect_status: 200
+        env_refs:
+          - example_app_production_backend_env
+      web:
+        image: ghcr.io/example-org/example-app-web
+        exposure:
+          type: domain
+          domain: example.com
+          ssl: true
+        health:
+          path: /
+          expect_status: 200

@@ -1,0 +1,35 @@
+# Example instance: the SAME static site type, but published to our own VPS
+# (nginx serving a release directory via an atomic 'current' symlink swap).
+# Here the platform owns SSL (Certbot), unlike the Hostinger example.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-site-vps
+  description: Generic static site hosted on our own VPS
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-site
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: vps
+      ref: vps-01
+    build:
+      command: npm ci && npm run build
+      output_dir: dist
+      node_version: "20"
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: www.example.com
+          ssl: true
+        release_strategy: symlink

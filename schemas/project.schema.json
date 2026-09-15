@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atmez-deploy:deployment-platform:project-schema:1.0",
+  "title": "Deployment Platform Project Configuration",
+  "description": "Generic, provider-agnostic description of a project and its environments. One deployment engine consumes this to produce a project-specific result. Contains NO secrets: secret material is referenced by name and supplied at runtime via the SecretProvider.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "repository", "environments"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this configuration schema the file targets.",
+      "default": "1.0"
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identitySlug",
+          "description": "Unique project identity. Used to derive filesystem paths, container/network names, nginx config names, state and locks."
+        },
+        "description": { "type": "string" },
+        "owner": { "type": "string", "description": "Team or person responsible." }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organization", "repository"],
+      "properties": {
+        "organization": { "type": "string" },
+        "repository": { "type": "string" },
+        "default_branch": { "type": "string", "default": "main" }
+      }
+    },
+    "defaults": {
+      "$ref": "#/$defs/environmentCommon",
+      "description": "Optional values inherited by every environment unless overridden. Deep-merged with each environment before validation of the effective config."
+    },
+    "environments": {
+      "type": "object",
+      "description": "Map of environment name (e.g. staging, production) to its configuration.",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/identitySlug" },
+      "additionalProperties": { "$ref": "#/$defs/environment" }
+    }
+  },
+
+  "$defs": {
+    "identitySlug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$",
+      "description": "Lowercase kebab-case identity segment used to build resource names."
+    },
+
+    "environmentCommon": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Fields that may appear either in defaults or in a specific environment.",
+      "properties": {
+        "user": { "$ref": "#/$defs/deployUser" },
+        "database": { "$ref": "#/$defs/database" },
+        "build": { "$ref": "#/$defs/build" }
+      }
+    },
+
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deployment", "target", "services"],
+      "properties": {
+        "deployment": { "$ref": "#/$defs/deployment" },
+        "target": { "$ref": "#/$defs/target" },
+        "user": { "$ref": "#/$defs/deployUser" },
+        "build": { "$ref": "#/$defs/build" },
+        "database": { "$ref": "#/$defs/database" },
+        "services": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/identitySlug" },
+          "additionalProperties": { "$ref": "#/$defs/service" }
+        }
+      },
+      "allOf": [
+        {
+          "description": "Static deployments must declare how the artifact is built.",
+          "if": {
+            "properties": { "deployment": { "properties": { "type": { "const": "static" } } } }
+          },
+          "then": { "required": ["build"] }
+        }
+      ]
+    },
+
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["docker", "static"],
+          "description": "docker = long-running containers; static = build produces files that are published."
+        },
+        "strategy": {
+          "enum": ["blue_green", "recreate"],
+          "description": "docker strategy. blue_green is default and required for reversible deploys.",
+          "default": "blue_green"
+        }
+      },
+      "allOf": [
+        {
+          "description": "strategy only applies to docker deployments.",
+          "if": { "properties": { "type": { "const": "static" } } },
+          "then": { "not": { "required": ["strategy"] } }
+        }
+      ]
+    },
+
+    "target": {
+      "type": "object",
+      "required": ["driver"],
+      "description": "Where and how the deployment is published. The engine resolves driver to a driver implementation.",
+      "properties": {
+        "driver": { "enum": ["vps", "hostinger", "netlify", "s3_cdn"] }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/targetVps" },
+        { "$ref": "#/$defs/targetHostinger" },
+        { "$ref": "#/$defs/targetNetlify" },
+        { "$ref": "#/$defs/targetS3Cdn" }
+      ]
+    },
+
+    "targetVps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "ref"],
+      "properties": {
+        "driver": { "const": "vps" },
+        "ref": {
+          "$ref": "#/$defs/identitySlug",
+          "description": "ID of the VPS in the resource registry; resolves to host + credentials at runtime."
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Root under which project deployments live.",
+          "default": "/opt/deployments"
+        }
+      }
+    },
+
+    "targetHostinger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "host", "webroot", "auth"],
+      "properties": {
+        "driver": { "const": "hostinger" },
+        "host": { "type": "string", "description": "Hostname or IP of the Hostinger account endpoint." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+        "username": { "type": "string", "description": "Non-secret account/SSH username." },
+        "auth": {
+          "enum": ["ssh_key", "ftps"],
+          "description": "ssh_key (preferred, enables atomic releases) or ftps (fallback). Key/password supplied via SecretProvider, never here."
+        },
+        "webroot": { "type": "string", "description": "Target web root, e.g. public_html." },
+        "transfer": {
+          "enum": ["rsync", "scp", "ftps"],
+          "description": "Transfer mechanism. rsync (with ssh_key) is preferred.",
+          "default": "rsync"
+        },
+        "secret_ref": {
+          "type": "string",
+          "description": "Name of the secret (looked up via SecretProvider) holding the SSH key or FTPS password."
+        }
+      },
+      "allOf": [
+        {
+          "description": "ftps auth cannot use rsync/scp transfer.",
+          "if": { "properties": { "auth": { "const": "ftps" } } },
+          "then": { "properties": { "transfer": { "const": "ftps" } } }
+        }
+      ]
+    },
+
+    "targetNetlify": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "site_id"],
+      "properties": {
+        "driver": { "const": "netlify" },
+        "site_id": { "type": "string" },
+        "secret_ref": { "type": "string", "description": "Name of the secret holding the Netlify auth token." }
+      }
+    },
+
+    "targetS3Cdn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "bucket", "region"],
+      "properties": {
+        "driver": { "const": "s3_cdn" },
+        "bucket": { "type": "string" },
+        "region": { "type": "string" },
+        "distribution_id": { "type": "string", "description": "CDN distribution to invalidate after sync." },
+        "secret_ref": { "type": "string", "description": "Name of the secret holding cloud credentials." }
+      }
+    },
+
+    "deployUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "Least-privilege Linux deployment identity for vps targets.",
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+        "ssh_key_ref": { "type": "string", "description": "Name of the secret holding the SSH private key." }
+      }
+    },
+
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "output_dir"],
+      "description": "How CI produces the static artifact. Runs in CI, not on the target.",
+      "properties": {
+        "command": { "type": "string", "description": "Build command, e.g. 'npm ci && npm run build'." },
+        "output_dir": { "type": "string", "description": "Directory containing the built site, e.g. 'dist'." },
+        "node_version": { "type": "string" }
+      }
+    },
+
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "Project/environment-scoped database. Migrations run only for this deployment.",
+      "properties": {
+        "name": { "type": "string", "description": "e.g. example_app_staging" },
+        "migrate": { "type": "boolean", "default": true },
+        "migrate_command": { "type": "string" }
+      }
+    },
+
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exposure"],
+      "properties": {
+        "image": {
+          "type": "string",
+          "description": "Container image (docker deployments only). Deployment should use an immutable ref (…@sha or :<commit>)."
+        },
+        "exposure": { "$ref": "#/$defs/exposure" },
+        "health": { "$ref": "#/$defs/health" },
+        "env_refs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Names of environment/secret entries injected at runtime via SecretProvider. Names only, never values."
+        },
+        "release_strategy": {
+          "enum": ["symlink", "mirror", "ftps_upload"],
+          "description": "static only. symlink (atomic, SSH), mirror (rsync --delete), ftps_upload (least atomic fallback)."
+        }
+      }
+    },
+
+    "exposure": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["domain", "port", "internal"] }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "domain"],
+          "properties": {
+            "type": { "const": "domain" },
+            "domain": { "type": "string", "format": "hostname" },
+            "ssl": {
+              "oneOf": [
+                { "type": "boolean" },
+                { "const": "managed_by_provider" }
+              ],
+              "description": "true = platform provisions the cert (Certbot on vps). 'managed_by_provider' = external host (e.g. Hostinger hPanel) owns SSL.",
+              "default": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "port" },
+            "protocol": { "enum": ["http", "tcp"], "default": "http" },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Optional fixed port. Omit to let the platform allocate one automatically (preferred, Rule 9)."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "internal" }
+          }
+        }
+      ]
+    },
+
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "description": "HTTP path to probe, e.g. /api/health." },
+        "expect_status": { "type": "integer", "default": 200 },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "default": 30 },
+        "retries": { "type": "integer", "minimum": 0, "default": 5 }
+      }
+    }
+  }
+}
