@@ -1,0 +1,49 @@
+name: Rollback static site
+
+# Repoint the live 'current' symlink back to a previous release (SSH targets only).
+# Manual trigger: choose the config, environment, and the release (commit sha) to
+# roll back to. The release dir must still exist on the host.
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Path to project config
+        required: true
+        default: examples/example-site.project.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: production
+      to_sha:
+        description: Release id (commit sha) to roll back to
+        required: true
+      execute:
+        description: Actually run (false = dry run)
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-static-${{ github.event.inputs.config }}-${{ github.event.inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Rollback
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          EXECUTE=""
+          if [ "${{ github.event.inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node engine/cli.mjs rollback \
+            --config "${{ github.event.inputs.config }}" \
+            --env "${{ github.event.inputs.environment }}" \
+            --to "${{ github.event.inputs.to_sha }}" \
+            $EXECUTE

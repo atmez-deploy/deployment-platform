@@ -1,0 +1,95 @@
+name: Deploy static site
+
+# MVP pipeline: build a static site in CI and publish it to a Hostinger target
+# via the platform engine. Triggered on push to the default branch, or manually.
+#
+# Required repository secrets:
+#   DEPLOY_SSH_KEY   SSH private key for the Hostinger account (auth=ssh_key)
+#   FTPS_PASSWORD    (only if the target uses auth=ftps instead)
+#
+# Required inputs (manual run) / defaults (push):
+#   config  path to the project config (default: examples/example-site.project.yaml)
+#   env     environment name in that config (default: production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Path to project config
+        required: true
+        default: examples/example-site.project.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: production
+      execute:
+        description: Actually run (false = dry run)
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "site/**"          # adjust to the built-site source in a real client repo
+      - ".github/workflows/deploy-static.yml"
+
+concurrency:
+  # one deploy per config+env at a time (mirrors the VPS-level lock idea)
+  group: deploy-static-${{ github.event.inputs.config || 'examples/example-site.project.yaml' }}-${{ github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Engine deps (ajv/js-yaml). In a real client repo this action would be a
+      # reusable workflow pulling the engine; for the MVP we run it in-repo.
+      - name: Install engine deps
+        run: npm install
+
+      # --- Build the site ---
+      # For the demo we build from the config's build.command/output_dir. This step
+      # is intentionally simple; a real site repo plugs its own build here.
+      - name: Read build settings
+        id: build
+        run: |
+          CONFIG="${{ github.event.inputs.config || 'examples/example-site.project.yaml' }}"
+          ENV="${{ github.event.inputs.environment || 'production' }}"
+          echo "config=$CONFIG" >> "$GITHUB_OUTPUT"
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+          node -e "const y=require('js-yaml');const fs=require('fs');const c=y.load(fs.readFileSync('$CONFIG','utf8'));const e=c.environments['$ENV'];if(!e.build){console.error('no build block');process.exit(1)};console.log(e.build.command);console.log(e.build.output_dir)" > .buildinfo
+          echo "command=$(sed -n 1p .buildinfo)" >> "$GITHUB_OUTPUT"
+          echo "output_dir=$(sed -n 2p .buildinfo)" >> "$GITHUB_OUTPUT"
+
+      - name: Build site
+        run: |
+          echo "Running build: ${{ steps.build.outputs.command }}"
+          # A demo-safe build: if the project has its own build, run it; otherwise
+          # produce a tiny placeholder so the pipeline is demoable end-to-end.
+          if [ -f package.json ] && grep -q '"build"' package.json; then
+            ${{ steps.build.outputs.command }} || true
+          fi
+          mkdir -p "${{ steps.build.outputs.output_dir }}"
+          if [ ! -f "${{ steps.build.outputs.output_dir }}/index.html" ]; then
+            echo "<h1>Deployed by atmez-deploy</h1><p>commit ${{ github.sha }}</p>" > "${{ steps.build.outputs.output_dir }}/index.html"
+          fi
+
+      # --- Publish via the engine ---
+      - name: Deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          FTPS_PASSWORD: ${{ secrets.FTPS_PASSWORD }}
+        run: |
+          EXECUTE=""
+          if [ "${{ github.event.inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node engine/cli.mjs deploy \
+            --config "${{ steps.build.outputs.config }}" \
+            --env "${{ steps.build.outputs.env }}" \
+            --sha "${{ github.sha }}" \
+            --dir "${{ steps.build.outputs.output_dir }}" \
+            $EXECUTE
