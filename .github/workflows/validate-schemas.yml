@@ -1,4 +1,4 @@
-name: Validate project configs
+name: CI
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - "schemas/**"
       - "examples/**"
       - "config/**"
+      - "engine/**"
       - "tools/**"
       - "package.json"
       - ".github/workflows/validate-schemas.yml"
@@ -14,6 +15,7 @@ on:
       - "schemas/**"
       - "examples/**"
       - "config/**"
+      - "engine/**"
       - "tools/**"
       - "package.json"
 
@@ -28,3 +30,4 @@ jobs:
       - run: npm install
       - run: npm run validate
       - run: npm run test:schema
+      - run: npm run test:unit
