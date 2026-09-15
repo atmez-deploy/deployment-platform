@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Sanity check that the schema REJECTS invalid configs (validation has teeth).
-// Each case below must fail validation; if any is accepted, this script errors.
+// Sanity check that schemas REJECT invalid configs (validation has teeth).
+// Every case below must FAIL validation; if any is accepted, this script errors.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -8,12 +8,20 @@ import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const schema = JSON.parse(readFileSync(join(root, "schemas", "project.schema.json"), "utf8"));
-const ajv = new Ajv({ allErrors: true, strict: false });
-addFormats(ajv);
-const validate = ajv.compile(schema);
+const clone = (o) => JSON.parse(JSON.stringify(o));
 
-const base = {
+function compile(rel) {
+  const schema = JSON.parse(readFileSync(join(root, rel), "utf8"));
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  addFormats(ajv);
+  return ajv.compile(schema);
+}
+
+const validateProject = compile("schemas/project.schema.json");
+const validateRegistry = compile("schemas/registry.schema.json");
+
+// ---- project schema negative cases ----
+const projectBase = {
   project: { name: "x" },
   repository: { organization: "o", repository: "r" },
   environments: {
@@ -25,47 +33,81 @@ const base = {
   },
 };
 
-const clone = (o) => JSON.parse(JSON.stringify(o));
-
 const cases = [];
 
-// 1. static without build must fail
 {
-  const c = clone(base);
+  const c = clone(projectBase);
   c.environments.production.deployment = { type: "static" };
-  cases.push(["static without build", c]);
+  cases.push([validateProject, "project: static without build", c]);
 }
-// 2. unknown top-level property must fail (additionalProperties:false)
 {
-  const c = clone(base);
+  const c = clone(projectBase);
   c.bogus = true;
-  cases.push(["unknown top-level key", c]);
+  cases.push([validateProject, "project: unknown top-level key", c]);
 }
-// 3. target missing required driver fields must fail (oneOf)
 {
-  const c = clone(base);
-  c.environments.production.target = { driver: "hostinger" }; // missing host/webroot/auth
-  cases.push(["incomplete hostinger target", c]);
+  const c = clone(projectBase);
+  c.environments.production.target = { driver: "hostinger" };
+  cases.push([validateProject, "project: incomplete hostinger target", c]);
 }
-// 4. bad project name (uppercase) must fail the slug pattern
 {
-  const c = clone(base);
+  const c = clone(projectBase);
   c.project.name = "BadName";
-  cases.push(["invalid project name slug", c]);
+  cases.push([validateProject, "project: invalid name slug", c]);
 }
-// 5. domain exposure without domain must fail
 {
-  const c = clone(base);
+  const c = clone(projectBase);
   c.environments.production.services.web = { exposure: { type: "domain" } };
-  cases.push(["domain exposure without domain", c]);
+  cases.push([validateProject, "project: domain exposure without domain", c]);
+}
+
+// ---- registry schema negative cases ----
+const registryBase = {
+  schema_version: "1.0",
+  resources: [
+    {
+      id: "vps-01",
+      kind: "vps",
+      connection: { host: "h", username: "u", ssh_key_ref: "k" },
+      port_pools: { backend: { start: 5000, end: 5099 } },
+      projects: [],
+    },
+  ],
+};
+
+{
+  const c = clone(registryBase);
+  c.resources[0].connection = { host: "h", username: "u" }; // missing ssh_key_ref
+  cases.push([validateRegistry, "registry: connection missing ssh_key_ref", c]);
+}
+{
+  const c = clone(registryBase);
+  c.resources[0].port_pools.backend.end = 70000; // out of port range
+  cases.push([validateRegistry, "registry: port pool end out of range", c]);
+}
+{
+  const c = clone(registryBase);
+  // vps entry with no port_pools must fail (required)
+  delete c.resources[0].port_pools;
+  cases.push([validateRegistry, "registry: vps without port_pools", c]);
+}
+{
+  const c = clone(registryBase);
+  c.resources[0].secret = "supersecret"; // additionalProperties:false — no secrets field
+  cases.push([validateRegistry, "registry: unknown/secret field on vps", c]);
+}
+{
+  const c = clone(registryBase);
+  c.resources.push({ id: "x", kind: "external", provider: "unknown-host" }); // bad provider enum
+  cases.push([validateRegistry, "registry: external with invalid provider", c]);
 }
 
 let leaked = 0;
-for (const [name, cfg] of cases) {
+for (const [validate, name, cfg] of cases) {
   const ok = validate(cfg);
   if (ok) {
     leaked++;
-    console.log(`LEAK  accepted invalid config: ${name}`);
+    console.log(`LEAK  accepted invalid: ${name}`);
   } else {
     console.log(`OK    rejected: ${name}`);
   }

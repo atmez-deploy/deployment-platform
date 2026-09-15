@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atmez-deploy:deployment-platform:registry-schema:1.0",
+  "title": "Deployment Platform Resource Registry",
+  "description": "Inventory of infrastructure the platform deploys to. Resolves a project config's target.ref to a concrete VPS (or external provider). Contains NO secrets: SSH material is referenced by name (ssh_key_ref) and supplied at runtime via the SecretProvider.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "resources"],
+  "properties": {
+    "schema_version": { "type": "string", "default": "1.0" },
+    "resources": {
+      "type": "array",
+      "description": "All infrastructure entries. Each entry's id must match a project's target.ref.",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/vpsResource" },
+          { "$ref": "#/$defs/externalResource" }
+        ]
+      }
+    }
+  },
+
+  "$defs": {
+    "identitySlug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$",
+      "description": "Lowercase kebab-case identity segment."
+    },
+
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+
+    "vpsResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "connection", "port_pools"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identitySlug",
+          "description": "Stable id, matches target.ref in project configs (e.g. vps-01)."
+        },
+        "kind": { "const": "vps" },
+        "provider": {
+          "type": "string",
+          "description": "Informational (e.g. hetzner, contabo, aws-ec2)."
+        },
+        "connection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "username", "ssh_key_ref"],
+          "properties": {
+            "host": { "type": "string", "description": "Hostname or IP." },
+            "port": { "$ref": "#/$defs/port", "default": 22 },
+            "username": { "type": "string", "description": "Non-secret SSH username." },
+            "ssh_key_ref": {
+              "type": "string",
+              "description": "NAME of the secret holding the SSH private key. Never the key itself."
+            }
+          }
+        },
+        "capacity": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Informational capacity limits.",
+          "properties": {
+            "cpu": { "type": "integer", "minimum": 1 },
+            "memory_mb": { "type": "integer", "minimum": 1 },
+            "storage_gb": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "base_path": {
+          "type": "string",
+          "description": "Root under which project deployments live.",
+          "default": "/opt/deployments"
+        },
+        "port_pools": {
+          "type": "object",
+          "description": "Named port ranges the allocator draws from, keyed by service class.",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/identitySlug" },
+          "additionalProperties": { "$ref": "#/$defs/portPool" }
+        },
+        "projects": {
+          "type": "array",
+          "description": "Project+environment pairs hosted here and their recorded allocations.",
+          "items": { "$ref": "#/$defs/hostedProject" },
+          "default": []
+        }
+      }
+    },
+
+    "portPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "$ref": "#/$defs/port" },
+        "end": { "$ref": "#/$defs/port" }
+      }
+    },
+
+    "hostedProject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "environment"],
+      "properties": {
+        "project": { "$ref": "#/$defs/identitySlug" },
+        "environment": { "$ref": "#/$defs/identitySlug" },
+        "allocations": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ports": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["service", "port", "pool"],
+                "properties": {
+                  "service": { "$ref": "#/$defs/identitySlug" },
+                  "port": { "$ref": "#/$defs/port" },
+                  "pool": {
+                    "$ref": "#/$defs/identitySlug",
+                    "description": "Name of the port_pool this port was drawn from."
+                  }
+                }
+              },
+              "default": []
+            },
+            "domains": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["service", "domain"],
+                "properties": {
+                  "service": { "$ref": "#/$defs/identitySlug" },
+                  "domain": { "type": "string", "format": "hostname" }
+                }
+              },
+              "default": []
+            }
+          }
+        }
+      }
+    },
+
+    "externalResource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "provider"],
+      "description": "A managed external host (e.g. hostinger, netlify, s3_cdn). The platform does not allocate ports/capacity here; the provider manages its own resources (Rule 13).",
+      "properties": {
+        "id": { "$ref": "#/$defs/identitySlug" },
+        "kind": { "const": "external" },
+        "provider": { "enum": ["hostinger", "netlify", "s3_cdn"] },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

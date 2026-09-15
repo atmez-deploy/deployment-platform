@@ -1,0 +1,56 @@
+# Example resource registry. Real registries live in the platform's own config,
+# never inside a client repo. Contains NO secrets — only ssh_key_ref names.
+# Validate against ../schemas/registry.schema.json
+schema_version: "1.0"
+
+resources:
+
+  # --- Our own VPS: platform owns allocation here ---
+  - id: vps-01
+    kind: vps
+    provider: hetzner
+    connection:
+      host: 203.0.113.10
+      port: 22
+      username: platform
+      ssh_key_ref: vps_01_ssh_key
+    capacity:
+      cpu: 4
+      memory_mb: 8192
+      storage_gb: 160
+    base_path: /opt/deployments
+    port_pools:
+      backend:
+        start: 5000
+        end: 5099
+      web:
+        start: 8100
+        end: 8199
+    projects:
+      - project: example-app
+        environment: staging
+        allocations:
+          ports:
+            - { service: backend, port: 5000, pool: backend }
+          domains:
+            - { service: backend, domain: api.staging.example.com }
+            - { service: web, domain: staging.example.com }
+      - project: example-app
+        environment: production
+        allocations:
+          ports:
+            - { service: backend, port: 5001, pool: backend }
+          domains:
+            - { service: backend, domain: api.example.com }
+            - { service: web, domain: example.com }
+      - project: example-site-vps
+        environment: production
+        allocations:
+          domains:
+            - { service: site, domain: www.example.com }
+
+  # --- External managed host: no ports/capacity tracked (Rule 13) ---
+  - id: hostinger-main
+    kind: external
+    provider: hostinger
+    note: Shared hosting account for static sites; SSL managed via hPanel.
