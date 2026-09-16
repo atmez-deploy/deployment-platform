@@ -1,0 +1,35 @@
+# DROP THIS INTO A SERVICE REPO at: .github/workflows/deploy.yml
+#
+# The service repo's OWN ci builds+pushes the image (to GHCR, etc.) and passes the
+# resulting immutable ref as `image`. This caller then invokes the central reusable
+# workflow to perform the blue/green deployment to the VPS. All logic lives centrally.
+
+name: Deploy service
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Immutable image reference to deploy
+        required: true
+      environment:
+        description: Environment
+        required: false
+        default: staging
+      service:
+        description: Service name
+        required: false
+        default: backend
+
+jobs:
+  deploy:
+    uses: atmez-deploy/deployment-platform/.github/workflows/_deploy-service.reusable.yml@main
+    with:
+      config: deploy.project.yaml         # this service's config in THIS repo
+      registry: deploy.registry.yaml      # the resource registry (or a path to it)
+      environment: ${{ github.event.inputs.environment }}
+      service: ${{ github.event.inputs.service }}
+      image: ${{ github.event.inputs.image }}
+      execute: true
+    secrets:
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

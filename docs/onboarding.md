@@ -64,3 +64,38 @@ On the platform repo (for the generator):
 - `ONBOARD_TOKEN` — the GitHub App/PAT token.
 - `SITE_FTP_PASSWORD` / `SITE_FTP_HOST` / `SITE_FTP_USERNAME` / `SITE_DEPLOY_SSH_KEY` — the
   values to install into the target repo during onboarding.
+
+---
+
+## Onboarding a VPS/Docker SERVICE (backend, worker, API)
+
+Same one-click model, different target. The service repo's own CI builds+pushes the image;
+the platform deploys it blue/green to the VPS.
+
+### One-time / prerequisites
+- The same GitHub App/`ONBOARD_TOKEN` as for static sites.
+- A VPS present in the resource registry (with Docker + Nginx + a deploy user), and its
+  `DEPLOY_SSH_KEY`.
+- The project+environment **registered** in the registry so a port + domain are allocated
+  (this is the resource-allocation step; without it, deploy-service will refuse because no
+  port/domain is reserved).
+
+### Automatic (onboard-site generator, service mode)
+```
+GH_TOKEN=... DEPLOY_SSH_KEY=... node tools/onboard.mjs \
+  --kind service --repo owner/name --domain api.example.com \
+  --vps-ref vps-01 --service backend --environment staging
+```
+This writes a docker `deploy.project.yaml`, the service caller workflow
+(`.github/workflows/deploy.yml`), and sets `DEPLOY_SSH_KEY` in the repo. It does NOT
+auto-deploy — a service deploy needs an image reference, which the repo's CI produces.
+
+### Deploying
+After the repo's CI builds+pushes an image, run the repo's **Deploy service** workflow
+(or the central `deploy-service.yml`) with the immutable image ref. The engine does:
+pull → start idle color → health check → atomic Nginx switch → verify → stop old.
+Rollback = the `rollback-service` flow (Nginx switch back).
+
+### Reusable workflow
+The logic lives once in `.github/workflows/_deploy-service.reusable.yml`; the service repo
+caller (`examples/caller-deploy-service.yml`) is ~15 lines.

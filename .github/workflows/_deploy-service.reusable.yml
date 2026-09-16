@@ -1,0 +1,83 @@
+name: Reusable — deploy service (VPS Docker blue/green)
+
+# Central, reusable deployment logic for containerized services. A service repo calls
+# this via `workflow_call` with a tiny caller workflow (see examples/caller-deploy-service.yml).
+# The image is expected to be built + pushed to a registry by the service repo's own CI;
+# this workflow performs the blue/green deployment to the VPS only.
+#
+# The project+environment must already be registered in the registry (so a port + domain
+# are allocated). The engine is pulled from this platform repo at a pinned ref.
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: Path to the project config (in the CALLER repo)
+        required: true
+        type: string
+      registry:
+        description: Path to the resource registry (in the CALLER repo or platform)
+        required: true
+        type: string
+      environment:
+        description: Environment name
+        required: false
+        default: staging
+        type: string
+      service:
+        description: Service name (e.g. backend)
+        required: true
+        type: string
+      image:
+        description: Immutable image reference (…@sha256 or :tag)
+        required: true
+        type: string
+      platform_ref:
+        description: Ref of atmez-deploy/deployment-platform to use
+        required: false
+        default: main
+        type: string
+      execute:
+        description: Actually run (false = dry run)
+        required: false
+        default: true
+        type: boolean
+    secrets:
+      DEPLOY_SSH_KEY:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout service repo
+        uses: actions/checkout@v4
+
+      - name: Checkout deployment platform
+        uses: actions/checkout@v4
+        with:
+          repository: atmez-deploy/deployment-platform
+          ref: ${{ inputs.platform_ref }}
+          path: _platform
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install engine deps
+        working-directory: _platform
+        run: npm install
+
+      - name: Deploy service
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          EXECUTE=""
+          if [ "${{ inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node _platform/engine/cli.mjs deploy-service \
+            --config "${{ inputs.config }}" \
+            --env "${{ inputs.environment }}" \
+            --service "${{ inputs.service }}" \
+            --registry "${{ inputs.registry }}" \
+            --image "${{ inputs.image }}" \
+            $EXECUTE

@@ -25,17 +25,21 @@ const sodium = require("libsodium-wrappers");
 const API = "https://api.github.com";
 
 function parseArgs(argv) {
-  const o = { deploy: true, platformRef: "main", auth: "ftps" };
+  const o = { deploy: true, platformRef: "main", auth: "ftps", kind: "static" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--no-deploy") o.deploy = false;
     else if (a === "--repo") o.repo = argv[++i];
     else if (a === "--domain") o.domain = argv[++i];
     else if (a === "--auth") o.auth = argv[++i];
+    else if (a === "--kind") o.kind = argv[++i]; // static | service
+    else if (a === "--vps-ref") o.vpsRef = argv[++i];
+    else if (a === "--service") o.service = argv[++i];
     else if (a === "--platform-ref") o.platformRef = argv[++i];
     else if (a === "--environment") o.environment = argv[++i];
   }
-  o.environment = o.environment || "production";
+  o.environment = o.environment || (o.kind === "service" ? "staging" : "production");
+  o.service = o.service || "backend";
   return o;
 }
 
@@ -128,34 +132,76 @@ function siteConfig({ repoName, domain, auth, environment }) {
   );
 }
 
+function serviceCallerWorkflow(config, platformRef) {
+  return (
+    `name: Deploy service\n` +
+    `on:\n  workflow_dispatch:\n    inputs:\n` +
+    `      image: { description: Immutable image ref, required: true }\n` +
+    `      environment: { description: Environment, required: false, default: staging }\n` +
+    `      service: { description: Service name, required: false, default: backend }\n\n` +
+    `jobs:\n  deploy:\n` +
+    `    uses: atmez-deploy/deployment-platform/.github/workflows/_deploy-service.reusable.yml@${platformRef}\n` +
+    `    with:\n      config: ${config}\n      registry: deploy.registry.yaml\n` +
+    `      environment: \${{ github.event.inputs.environment }}\n` +
+    `      service: \${{ github.event.inputs.service }}\n      image: \${{ github.event.inputs.image }}\n      execute: true\n` +
+    `    secrets:\n      DEPLOY_SSH_KEY: \${{ secrets.DEPLOY_SSH_KEY }}\n`
+  );
+}
+
+function serviceConfig({ repoName, domain, service, environment, vpsRef }) {
+  return (
+    `schema_version: "1.0"\n` +
+    `project:\n  name: ${repoName}\n` +
+    `repository:\n  organization: atmez-deploy\n  repository: ${repoName}\n` +
+    `environments:\n  ${environment}:\n    deployment:\n      type: docker\n      strategy: blue_green\n` +
+    `    target:\n      driver: vps\n      ref: ${vpsRef}\n` +
+    `    services:\n      ${service}:\n` +
+    `        exposure:\n          type: domain\n          domain: ${domain}\n          ssl: true\n` +
+    `        health:\n          path: /health\n          expect_status: 200\n`
+  );
+}
+
+async function onboardStatic(owner, repo, o, keyCache) {
+  const configPath = "deploy.project.yaml";
+  console.log(`onboarding static ${o.repo} (${o.auth}) -> ${o.domain}`);
+  await putFile(owner, repo, configPath, siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment }), "chore: add atmez-deploy site config");
+  await putFile(owner, repo, ".github/workflows/deploy.yml", callerWorkflow(configPath, o.environment, o.platformRef), "ci: add atmez-deploy caller workflow");
+  for (const name of ["FTP_PASSWORD", "FTP_HOST", "FTP_USERNAME", "FTP_WEBROOT", "DEPLOY_SSH_KEY"]) {
+    await setSecret(owner, repo, name, process.env[name], keyCache);
+  }
+  if (o.deploy) {
+    await gh(`/repos/${owner}/${repo}/actions/workflows/deploy.yml/dispatches`, { method: "POST", body: { ref: "main" } })
+      .catch((e) => console.warn(`  (first deploy dispatch skipped: ${e.message})`));
+    console.log("  triggered first deploy");
+  }
+}
+
+async function onboardService(owner, repo, o, keyCache) {
+  if (!o.vpsRef) die("--vps-ref <id> is required for service onboarding (the registry VPS id)");
+  const configPath = "deploy.project.yaml";
+  console.log(`onboarding service ${o.repo} [${o.service}] on ${o.vpsRef} -> ${o.domain}`);
+  await putFile(owner, repo, configPath, serviceConfig({ repoName: repo, domain: o.domain, service: o.service, environment: o.environment, vpsRef: o.vpsRef }), "chore: add atmez-deploy service config");
+  await putFile(owner, repo, ".github/workflows/deploy.yml", serviceCallerWorkflow(configPath, o.platformRef), "ci: add atmez-deploy service caller workflow");
+  await setSecret(owner, repo, "DEPLOY_SSH_KEY", process.env.DEPLOY_SSH_KEY, keyCache);
+  // No auto first-deploy: a service deploy needs an image ref, which the repo's own CI
+  // produces. The engineer runs the caller with the image once CI has pushed it.
+  console.log("  service onboarded; run the 'Deploy service' workflow with an image ref to deploy");
+  console.log("  NOTE: register this project+environment in the registry so a port+domain are allocated");
+}
+
 async function main() {
   if (!token) die("GH_TOKEN env is required (GitHub App installation token or PAT)");
   const o = parseArgs(process.argv.slice(2));
   if (!o.repo || !o.repo.includes("/")) die("--repo owner/name is required");
   if (!o.domain) die("--domain is required");
+  if (!["static", "service"].includes(o.kind)) die("--kind must be 'static' or 'service'");
   const [owner, repo] = o.repo.split("/");
 
   await sodium.ready;
-  const configPath = "deploy.project.yaml";
   const keyCache = {};
 
-  console.log(`onboarding ${o.repo} (${o.auth}) -> ${o.domain}`);
-
-  await putFile(owner, repo, configPath, siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment }), "chore: add atmez-deploy site config");
-  await putFile(owner, repo, ".github/workflows/deploy.yml", callerWorkflow(configPath, o.environment, o.platformRef), "ci: add atmez-deploy caller workflow");
-
-  for (const name of ["FTP_PASSWORD", "FTP_HOST", "FTP_USERNAME", "FTP_WEBROOT", "DEPLOY_SSH_KEY"]) {
-    await setSecret(owner, repo, name, process.env[name], keyCache);
-  }
-
-  if (o.deploy) {
-    // trigger the caller workflow (workflow_dispatch)
-    await gh(`/repos/${owner}/${repo}/actions/workflows/deploy.yml/dispatches`, {
-      method: "POST",
-      body: { ref: "main" },
-    }).catch((e) => console.warn(`  (first deploy dispatch skipped: ${e.message})`));
-    console.log("  triggered first deploy");
-  }
+  if (o.kind === "service") await onboardService(owner, repo, o, keyCache);
+  else await onboardStatic(owner, repo, o, keyCache);
 
   console.log("done.");
 }
