@@ -20,12 +20,13 @@
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { load as parseYaml } from "js-yaml";
+import { load as parseYaml, dump as dumpYaml } from "js-yaml";
 
 import * as staticHostinger from "./drivers/static-hostinger.mjs";
 import * as dockerVps from "./drivers/docker-vps.mjs";
 import { runPlan, renderCommands, toCommands } from "./executor.mjs";
 import { resolveTarget } from "./registry.mjs";
+import { registerProject } from "./register.mjs";
 import { preflight, listPlatforms, PLATFORMS } from "./platforms.mjs";
 
 function parseArgs(argv) {
@@ -131,7 +132,7 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|deploy|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|deploy|rollback|deploy-service|rollback-service> ...");
 
   // These two don't need a config/env — handle before the deploy-only guards.
   if (opts.command === "platforms") {
@@ -157,6 +158,38 @@ function main() {
       process.exit(1);
     }
     console.log("\npreflight OK — required inputs present.");
+    return;
+  }
+
+  // register: assign a project+env its resources (port block/ports + domains) and persist
+  // the updated registry. This is the onboarding step that deploy-service depends on.
+  if (opts.command === "register") {
+    if (!opts.config) fail("--config is required");
+    if (!opts.env) fail("--env is required");
+    if (!opts.registry) fail("--registry <path> is required");
+    const projectConfig = loadYaml(opts.config);
+    const registry = loadYaml(opts.registry);
+    let result;
+    try {
+      result = registerProject({ registry, projectConfig, environment: opts.env });
+    } catch (e) {
+      fail(e.message);
+    }
+    const rec = result.allocation;
+    console.log(`# registered ${projectConfig.project.name}/${opts.env}`);
+    if (Number.isInteger(rec.block_base)) console.log(`# block_base: ${rec.block_base}`);
+    for (const p of rec.allocations.ports ?? []) {
+      console.log(`  port  ${p.service}: blue=${p.port}${p.port_green ? ` green=${p.port_green}` : ""}`);
+    }
+    for (const d of rec.allocations.domains ?? []) {
+      console.log(`  domain ${d.service}: ${d.domain}`);
+    }
+    if (globalThis.__execute) {
+      writeFileSync(opts.registry, dumpYaml(result.registry, { lineWidth: 120 }));
+      console.log(`\n# registry updated: ${opts.registry}`);
+    } else {
+      console.log(`\n# DRY RUN — pass --execute to write the registry`);
+    }
     return;
   }
 

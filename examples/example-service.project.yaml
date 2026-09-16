@@ -1,0 +1,49 @@
+# Example: a multi-service backend project deployed to a block-model VPS (vps-02).
+# Demonstrates the register -> deploy-service flow. Generic — no real project name.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-service
+  description: Generic backend + web + admin on a VPS (Docker blue/green)
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-service
+  default_branch: main
+
+environments:
+
+  staging:
+    deployment:
+      type: docker
+      strategy: blue_green
+    target:
+      driver: vps
+      ref: vps-02
+    database:
+      name: example_service_staging
+      migrate: true
+    services:
+      backend:
+        image: ghcr.io/example-org/example-service-backend
+        exposure:
+          type: domain
+          domain: api.staging.example.com
+          ssl: true
+        health:
+          path: /api/health
+          expect_status: 200
+      web:
+        image: ghcr.io/example-org/example-service-web
+        exposure:
+          type: domain
+          domain: staging.example.com
+          ssl: true
+      admin:
+        image: ghcr.io/example-org/example-service-admin
+        exposure:
+          type: domain
+          domain: admin.staging.example.com
+          ssl: true

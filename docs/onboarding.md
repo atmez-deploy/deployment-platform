@@ -129,3 +129,28 @@ node engine/cli.mjs preflight --platform vps --config ... --environment ...   # 
 Note on the UX ceiling: GitHub Actions inputs are a flat form (no conditional fields based
 on the platform choice). A dynamic per-platform form/wizard is an Option B (dashboard)
 feature; Level 1 delivers the pick-validate-dryrun-deploy flow within Actions' limits.
+
+---
+
+## VPS: register before you deploy
+
+VPS deploys read the project's allocated ports/domains from the registry, so a project
+must be **registered** once per environment before the first `deploy-service`:
+
+```
+node engine/cli.mjs register \
+  --config examples/example-service.project.yaml --env staging \
+  --registry config/registry.example.yaml [--execute]
+```
+
+Without `--execute` it's a dry run (shows the block + allocations). With `--execute` it
+writes the registry. The block model assigns each project a contiguous port block
+(`block_base`) and derives blue/green ports per service, so projects never collide.
+
+In CI, run the **Register project** workflow (`.github/workflows/register-project.yml`)
+with `execute: true` — it registers and commits the updated registry back to the repo.
+Order of operations for a new VPS service:
+
+1. Ensure the VPS is in the registry (with a `port_block`).
+2. **Register project** (allocates the block + domains) — once.
+3. **Deploy service** (or the unified Deploy workflow) with an image ref.

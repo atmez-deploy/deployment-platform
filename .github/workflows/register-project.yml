@@ -1,0 +1,67 @@
+name: Register project (allocate resources)
+
+# Onboarding step for VPS projects: assigns a project+environment its port block +
+# per-service ports/domains and commits the updated registry back to this repo.
+# Run this ONCE per project+environment before the first deploy-service.
+#
+# The registry lives in this platform repo (config/registry.example.yaml by default).
+# Committing back requires the workflow to have contents:write (default GITHUB_TOKEN is
+# fine for pushing to this same repo).
+
+on:
+  workflow_dispatch:
+    inputs:
+      config:
+        description: Project config path (in this repo)
+        required: true
+        default: examples/example-service.project.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: staging
+      registry:
+        description: Resource registry path
+        required: true
+        default: config/registry.example.yaml
+      execute:
+        description: Write + commit the registry (false = dry run only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+
+      - name: Register (dry run)
+        run: |
+          node engine/cli.mjs register \
+            --config "${{ github.event.inputs.config }}" \
+            --env "${{ github.event.inputs.environment }}" \
+            --registry "${{ github.event.inputs.registry }}"
+
+      - name: Register + commit registry
+        if: ${{ github.event.inputs.execute == 'true' }}
+        run: |
+          node engine/cli.mjs register \
+            --config "${{ github.event.inputs.config }}" \
+            --env "${{ github.event.inputs.environment }}" \
+            --registry "${{ github.event.inputs.registry }}" \
+            --execute
+          if git diff --quiet -- "${{ github.event.inputs.registry }}"; then
+            echo "registry unchanged (already registered?)"
+            exit 0
+          fi
+          git config user.name "atmez-deploy-bot"
+          git config user.email "bot@atmez-deploy.local"
+          git add "${{ github.event.inputs.registry }}"
+          git commit -m "register: ${{ github.event.inputs.config }} (${{ github.event.inputs.environment }})"
+          git push
