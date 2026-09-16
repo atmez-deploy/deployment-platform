@@ -1,0 +1,44 @@
+# Example: a STATIC site published to a Hostinger SHARED plan over FTPS.
+# Use this when the plan has no SSH (cheapest shared hosting). No atomic swap:
+# files are mirrored straight into the webroot. Rollback = redeploy the prior build.
+#
+# Only the PASSWORD is secret (repo secret FTP_PASSWORD). host/username/webroot are not
+# secrets and live here; they may also be overridden by FTP_HOST/FTP_USERNAME/FTP_WEBROOT
+# secrets if a team prefers to keep them out of the repo.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-site-ftp
+  description: Generic static site on Hostinger shared hosting (FTPS)
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-site-ftp
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: hostinger
+      host: ftp.example.com
+      port: 21
+      username: u123456789
+      auth: ftps
+      webroot: public_html
+      transfer: ftps
+      secret_ref: example_site_ftp_password
+    build:
+      command: npm ci && npm run build
+      output_dir: dist
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: www.example.com
+          ssl: managed_by_provider
+        release_strategy: ftps_upload

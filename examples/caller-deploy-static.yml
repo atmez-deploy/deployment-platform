@@ -1,0 +1,29 @@
+# DROP THIS INTO A SITE REPO at: .github/workflows/deploy.yml
+#
+# This is the ENTIRE per-repo pipeline. All logic lives in the central platform's
+# reusable workflow; this file just calls it and forwards the repo's own secrets.
+# The onboard-site generator writes this file automatically — you rarely hand-copy it.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    uses: atmez-deploy/deployment-platform/.github/workflows/_deploy-static.reusable.yml@main
+    with:
+      config: deploy.project.yaml      # path to this site's config in THIS repo
+      environment: production
+      execute: true
+    secrets:
+      # Provide whichever set applies to this site's Hostinger plan:
+      # SSH plan:
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      # FTP-only plan:
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      FTP_HOST: ${{ secrets.FTP_HOST }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_WEBROOT: ${{ secrets.FTP_WEBROOT }}

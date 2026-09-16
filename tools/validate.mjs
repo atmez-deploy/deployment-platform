@@ -36,7 +36,9 @@ const groups = [
   {
     name: "project configs",
     validate: compile("schemas/project.schema.json"),
-    files: yamlFilesIn("examples"),
+    // Only *.project.yaml are project configs; other yaml in examples/ (e.g. the
+    // caller-workflow template) are not validated against the project schema.
+    files: yamlFilesIn("examples", (f) => f.endsWith(".project.yaml")),
   },
   {
     name: "resource registry",

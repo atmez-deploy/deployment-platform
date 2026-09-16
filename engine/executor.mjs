@@ -87,13 +87,13 @@ function staticToCommands(plan, conn, opts = {}) {
             args: [...s.args, "-r", `${step.localDir}/.`, `${s.dest}:${step.remoteDir}/`],
           });
         } else {
-          // ftps: delegate to lftp mirror (executor requires FTPS_PASSWORD in env at run time)
+          // ftps: delegate to lftp mirror (executor requires FTP_PASSWORD in env at run time)
           commands.push({
             label: `upload(ftps mirror) -> ${step.remoteDir}`,
             bin: "lftp",
             args: [
               "-c",
-              `set ftp:ssl-force true; open -u ${conn.username},$FTPS_PASSWORD ${conn.host}; ` +
+              `set ftp:ssl-force true; open -u ${conn.username},$FTP_PASSWORD ${conn.host}; ` +
                 `mirror -R --delete ${step.localDir} ${step.remoteDir}`,
             ],
           });

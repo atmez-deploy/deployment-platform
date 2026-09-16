@@ -1,0 +1,66 @@
+# Onboarding a New Site — Manual vs Automatic
+
+Goal: add any number of sites without hand-writing CI/CD each time. The deploy logic lives
+once in this platform's **reusable workflow**; each site just calls it. The **onboard-site**
+workflow wires a new repo up automatically.
+
+## The boundary
+
+### One-time, manual (unavoidable)
+- **Install a GitHub App (or create a PAT) on the `atmez-deploy` org**, with access to the
+  site repos and permissions: **Contents (write)**, **Secrets (write)**, **Actions (write)**.
+  Store its token as the `ONBOARD_TOKEN` secret on the `deployment-platform` repo.
+  Why manual: GitHub only lets an outside workflow write into a repo if it has been granted
+  access — this is a security boundary, done once.
+
+### Per-site, manual (Hostinger limitation)
+- **Create the FTP account + password and the subdomain in hPanel**, once per site.
+  Why manual: Hostinger shared hosting has no API to create FTP accounts/subdomains, so this
+  step can't be automated. (On VPS targets, this whole step goes away — the platform
+  provisions users/dirs/domains itself in a later phase.)
+
+### Everything else — automatic
+Run the **Onboard site** workflow (`.github/workflows/onboard-site.yml`) with the repo,
+domain, auth mode, and the FTP credentials. It will:
+1. Write `deploy.project.yaml` into the target repo.
+2. Write `.github/workflows/deploy.yml` (the ~10-line caller) into the target repo.
+3. Set the repo's secrets (`FTP_PASSWORD`, etc.) — encrypted via the repo public key.
+4. Trigger the first deploy.
+
+From then on, every push to the site repo deploys through the central reusable workflow.
+
+## How the pieces fit
+
+```
+site repo:  deploy.project.yaml + .github/workflows/deploy.yml (caller)  + secrets
+                     │  calls (workflow_call)
+                     ▼
+platform:   .github/workflows/_deploy-static.reusable.yml   (the logic, once)
+                     │  runs
+                     ▼
+            engine/cli.mjs  ->  driver (ssh releases | ftps mirror)  ->  Hostinger
+```
+
+- Update the logic once in `_deploy-static.reusable.yml` → all sites get it. No per-repo
+  copies to maintain.
+- Roll back a site: run its `deploy.yml` caller against a prior commit, or (SSH plans) the
+  rollback flow. FTP-only plans roll back by redeploying the prior build.
+
+## Adding a site (the whole checklist)
+
+1. (once) GitHub App installed + `ONBOARD_TOKEN` set. (once) done.
+2. In hPanel: create the FTP account + subdomain for the site. Note host/user/password.
+3. Run **Onboard site**: enter `owner/repo`, `domain`, `auth=ftps`, and provide the FTP
+   creds as the workflow's `SITE_FTP_*` secrets.
+4. Done — the site is deploying. Future pushes auto-deploy.
+
+## Secret names (convention)
+
+Per-site repo secrets used by the reusable workflow:
+- `FTP_PASSWORD` (required for ftps), optionally `FTP_HOST` / `FTP_USERNAME` / `FTP_WEBROOT`
+- `DEPLOY_SSH_KEY` (for ssh_key plans)
+
+On the platform repo (for the generator):
+- `ONBOARD_TOKEN` — the GitHub App/PAT token.
+- `SITE_FTP_PASSWORD` / `SITE_FTP_HOST` / `SITE_FTP_USERNAME` / `SITE_DEPLOY_SSH_KEY` — the
+  values to install into the target repo during onboarding.

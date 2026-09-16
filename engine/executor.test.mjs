@@ -58,3 +58,25 @@ test("prune command keeps N newest release dirs", () => {
   const remote = prune.args[prune.args.length - 1];
   assert.match(remote, /tail -n \+5/); // keep 4 => delete from line 5 on
 });
+
+// --- FTPS path ---
+const ftpsConn = {
+  host: "ftp.example.com",
+  port: 21,
+  username: "u123",
+  webroot: "public_html",
+  auth: "ftps",
+  transfer: "ftps",
+};
+
+test("ftps deploy compiles to an lftp mirror referencing $FTP_PASSWORD (never a literal)", () => {
+  const plan = planDeploy({ connection: ftpsConn, sha: "abc123", localDir: "dist" });
+  const cmds = toCommands(plan, ftpsConn);
+  assert.equal(cmds.length, 1);
+  assert.equal(cmds[0].bin, "lftp");
+  const script = cmds[0].args.at(-1);
+  assert.match(script, /open -u u123,\$FTP_PASSWORD ftp\.example\.com/);
+  assert.match(script, /mirror -R --delete dist public_html/);
+  // the password must be an env reference, not a value
+  assert.ok(!/password123|secret/i.test(script));
+});

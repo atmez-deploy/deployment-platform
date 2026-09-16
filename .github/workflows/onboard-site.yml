@@ -1,0 +1,62 @@
+name: Onboard site (automatic)
+
+# Automatically onboard a new static site: writes the config + caller workflow into
+# the target repo, sets its secrets, and triggers the first deploy — no manual copying.
+#
+# One-time prerequisite: a GitHub App (or PAT) with access to the target repos, providing
+# contents + secrets + actions write. Store its token as the secret ONBOARD_TOKEN here.
+#
+# Per-site prerequisite (Hostinger limitation): create the FTP account/subdomain in hPanel
+# once, then run this workflow with the resulting credentials.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Target repo (owner/name)
+        required: true
+      domain:
+        description: Public domain for the site
+        required: true
+      auth:
+        description: Hostinger auth mode
+        type: choice
+        options: [ftps, ssh_key]
+        default: ftps
+      environment:
+        description: Environment name
+        required: false
+        default: production
+      deploy:
+        description: Trigger first deploy after onboarding
+        type: boolean
+        default: true
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Onboard
+        env:
+          # Token with write access to the target repo (GitHub App installation token / PAT)
+          GH_TOKEN: ${{ secrets.ONBOARD_TOKEN }}
+          # Credentials to install into the target repo's secrets (only those set are written)
+          FTP_PASSWORD: ${{ secrets.SITE_FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.SITE_FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.SITE_FTP_USERNAME }}
+          FTP_WEBROOT: ${{ secrets.SITE_FTP_WEBROOT }}
+          DEPLOY_SSH_KEY: ${{ secrets.SITE_DEPLOY_SSH_KEY }}
+        run: |
+          DEPLOY_FLAG=""
+          if [ "${{ github.event.inputs.deploy }}" != "true" ]; then DEPLOY_FLAG="--no-deploy"; fi
+          node tools/onboard.mjs \
+            --repo "${{ github.event.inputs.repo }}" \
+            --domain "${{ github.event.inputs.domain }}" \
+            --auth "${{ github.event.inputs.auth }}" \
+            --environment "${{ github.event.inputs.environment }}" \
+            $DEPLOY_FLAG

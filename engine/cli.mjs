@@ -14,7 +14,8 @@
 //
 // Env:
 //   DEPLOY_SSH_KEY   PEM contents of the SSH private key
-//   FTPS_PASSWORD    password (static ftps only)
+//   FTP_PASSWORD     password (static ftps only)
+//   FTP_HOST/FTP_USERNAME/FTP_WEBROOT  optional overrides for ftps connection
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,14 +68,21 @@ function materializeKey() {
 function hostingerConnection(envConfig) {
   const t = envConfig.target;
   if (t?.driver !== "hostinger") fail(`expected 'hostinger' driver (got '${t?.driver}')`);
-  return {
-    host: t.host,
-    port: t.port ?? 22,
-    username: t.username,
-    webroot: t.webroot,
+  // Connection fields may come from the config OR from repo secrets injected as env.
+  // For FTP-only sites, teams typically keep host/user in secrets, not in the repo config.
+  const env = process.env;
+  const conn = {
+    host: env.FTP_HOST || t.host,
+    port: t.port ?? (t.auth === "ftps" ? 21 : 22),
+    username: env.FTP_USERNAME || t.username,
+    webroot: env.FTP_WEBROOT || t.webroot,
     auth: t.auth,
     transfer: t.transfer ?? (t.auth === "ftps" ? "ftps" : "rsync"),
   };
+  if (!conn.host) fail("host not set (config target.host or FTP_HOST secret)");
+  if (!conn.username) fail("username not set (config target.username or FTP_USERNAME secret)");
+  if (!conn.webroot) fail("webroot not set (config target.webroot or FTP_WEBROOT secret)");
+  return conn;
 }
 
 /** Find the allocated host port + domain for a service on the vps from the registry. */
