@@ -38,7 +38,13 @@ test("unknown platform throws PlatformError", () => {
 
 test("every platform maps to a real driver + command", () => {
   for (const [, p] of Object.entries(PLATFORMS)) {
-    assert.ok(["vps", "hostinger"].includes(p.kind));
-    assert.ok(["deploy", "deploy-service"].includes(p.command));
+    assert.ok(["vps", "hostinger", "cpanel"].includes(p.kind));
+    assert.ok(["deploy", "deploy-service", "deploy-cpanel"].includes(p.command));
   }
+});
+
+test("cpanel is a full-deploy platform (auto-provisions subdomain + FTP)", () => {
+  const cp = listPlatforms().find((p) => p.id === "cpanel");
+  assert.ok(cp);
+  assert.equal(cp.supportsFullDeploy, true);
 });

@@ -53,6 +53,25 @@ export const PLATFORMS = {
     ],
   },
 
+  cpanel: {
+    label: "cPanel host (static, auto-provisions subdomain + FTP via UAPI)",
+    kind: "cpanel",
+    command: "deploy-cpanel",
+    supportsFullDeploy: true, // UAPI can create subdomain + FTP account programmatically
+    inputs: [
+      { name: "config", from: "config", required: true, note: "project config path" },
+      { name: "environment", from: "config", required: true, note: "environment name" },
+      { name: "CPANEL_API_TOKEN", from: "secret", required: true, note: "cPanel API token (cpanel <user>:<token>)" },
+      { name: "FTP_PASSWORD", from: "secret", required: false, note: "password if creating an FTP account" },
+    ],
+    checklist: [
+      "cPanel account exists on the host (any cPanel-based provider).",
+      "cPanel API token created (cPanel -> Manage API Tokens); stored as CPANEL_API_TOKEN.",
+      "The account's main domain is set in the project config (rootDomain).",
+      "SSL is handled by cPanel AutoSSL for the new subdomain (may take a few minutes).",
+    ],
+  },
+
   "hostinger-ftp": {
     label: "Hostinger (static, FTPS mirror — no atomic rollback)",
     kind: "hostinger",

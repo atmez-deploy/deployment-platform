@@ -24,6 +24,7 @@ import { load as parseYaml, dump as dumpYaml } from "js-yaml";
 
 import * as staticHostinger from "./drivers/static-hostinger.mjs";
 import * as dockerVps from "./drivers/docker-vps.mjs";
+import * as cpanel from "./drivers/cpanel.mjs";
 import { runPlan, renderCommands, toCommands } from "./executor.mjs";
 import { resolveTarget } from "./registry.mjs";
 import { registerProject } from "./register.mjs";
@@ -132,7 +133,7 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|deploy|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
 
   // These two don't need a config/env — handle before the deploy-only guards.
   if (opts.command === "platforms") {
@@ -211,6 +212,34 @@ function main() {
       if (!opts.to) fail("--to <sha> is required");
       const connection = hostingerConnection(envConfig);
       run(opts.command, staticHostinger.planRollback({ connection, toSha: opts.to }), connection);
+      break;
+    }
+
+    // ---- cPanel static (auto-provision subdomain + FTP, then publish) ----
+    case "deploy-cpanel": {
+      if (!opts.dir) fail("--dir (built site directory) is required");
+      const t = envConfig.target;
+      if (t?.driver !== "cpanel") fail(`expected 'cpanel' driver (got '${t?.driver}')`);
+      const connection = {
+        host: t.host,
+        port: t.port ?? 2083,
+        sshPort: t.ssh_port ?? 22,
+        username: t.username,
+        apiTokenRef: "CPANEL_API_TOKEN",
+        transfer: t.transfer ?? "ftps",
+        ftpPasswordRef: "FTP_PASSWORD",
+      };
+      const svc = Object.values(envConfig.services ?? {})[0] ?? {};
+      const plan = cpanel.planDeploy({
+        connection,
+        subdomain: t.subdomain,
+        rootDomain: t.root_domain,
+        docroot: t.docroot ?? `public_html/${t.subdomain}`,
+        localDir: opts.dir,
+        createFtp: t.create_ftp === true,
+        ftpUser: t.ftp_user,
+      });
+      run(opts.command, plan, connection);
       break;
     }
 

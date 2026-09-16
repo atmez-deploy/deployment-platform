@@ -36,7 +36,85 @@ function sshBase(conn, keyPath) {
  */
 export function toCommands(plan, conn, opts = {}) {
   if (plan.driver === "docker-vps") return dockerVpsToCommands(plan, conn, opts);
+  if (plan.driver === "cpanel") return cpanelToCommands(plan, conn, opts);
   return staticToCommands(plan, conn, opts);
+}
+
+/**
+ * Compile cPanel plans to UAPI curl calls + an upload. cPanel UAPI is reached over HTTPS
+ * on port 2083 with an "Authorization: cpanel <user>:<token>" header. The token comes from
+ * the CPANEL_API_TOKEN env at run time (never embedded). These are LOCAL curl commands
+ * (run from the runner), not ssh — cPanel has no shell requirement for UAPI.
+ */
+function cpanelToCommands(plan, conn, opts = {}) {
+  const commands = [];
+  const host = conn.host;
+  const port = conn.port ?? 2083;
+  const authHeader = `Authorization: cpanel ${conn.username}:$CPANEL_API_TOKEN`;
+
+  for (const step of plan.steps) {
+    switch (step.type) {
+      case "uapi": {
+        // build query params; the FTP password (if any) is read from env at call time
+        const params = { ...step.params };
+        const qs = Object.entries(params)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .join("&");
+        const pwd = step.passwordFromEnv ? `&password=$${step.passwordFromEnv}` : "";
+        const url = `https://${host}:${port}/execute/${step.module}/${step.func}?${qs}${pwd}`;
+        // ignoreIfExists: cPanel returns an error string if it exists; we don't hard-fail.
+        const tail = step.ignoreIfExists ? " || true" : "";
+        commands.push({
+          label: `uapi ${step.module}/${step.func}`,
+          bin: "curl",
+          args: ["-s", "-H", authHeader, url],
+          _appendShell: tail,
+        });
+        break;
+      }
+      case "upload": {
+        if (step.method === "ftps") {
+          commands.push({
+            label: `upload(ftps) -> ${step.docroot}`,
+            bin: "lftp",
+            args: [
+              "-c",
+              `set ftp:ssl-force true; open -u ${conn.username},$FTP_PASSWORD ${host}; ` +
+                `mirror -R --delete ${step.localDir} ${step.docroot}`,
+            ],
+          });
+        } else {
+          // rsync over ssh into the docroot (cPanel hosts that allow SSH)
+          const sshCmd = [
+            "ssh",
+            opts.keyPath ? `-i ${opts.keyPath}` : "",
+            "-o BatchMode=yes",
+            "-o StrictHostKeyChecking=accept-new",
+            `-p ${conn.sshPort ?? 22}`,
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const src = step.localDir.endsWith("/") ? step.localDir : `${step.localDir}/`;
+          commands.push({
+            label: `upload(rsync) -> ${step.docroot}`,
+            bin: "rsync",
+            args: ["-az", "--delete", "-e", sshCmd, src, `${conn.username}@${host}:${step.docroot}/`],
+          });
+        }
+        break;
+      }
+      case "verify":
+        commands.push({
+          label: `verify ${step.url}`,
+          bin: "curl",
+          args: ["-fsk", step.url, "-o", "/dev/null"],
+        });
+        break;
+      default:
+        throw new Error(`unknown cpanel step type: ${step.type}`);
+    }
+  }
+  return commands;
 }
 
 /** Compile static-hostinger plans to ssh/rsync/lftp commands. */

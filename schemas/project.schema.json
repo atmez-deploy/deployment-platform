@@ -123,14 +123,36 @@
       "required": ["driver"],
       "description": "Where and how the deployment is published. The engine resolves driver to a driver implementation.",
       "properties": {
-        "driver": { "enum": ["vps", "hostinger", "netlify", "s3_cdn"] }
+        "driver": { "enum": ["vps", "hostinger", "cpanel", "netlify", "s3_cdn"] }
       },
       "oneOf": [
         { "$ref": "#/$defs/targetVps" },
         { "$ref": "#/$defs/targetHostinger" },
+        { "$ref": "#/$defs/targetCpanel" },
         { "$ref": "#/$defs/targetNetlify" },
         { "$ref": "#/$defs/targetS3Cdn" }
       ]
+    },
+
+    "targetCpanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "host", "username", "subdomain", "root_domain"],
+      "description": "cPanel-based shared host. Auto-provisions the subdomain (and optionally an FTP account) via UAPI. API token supplied via SecretProvider (CPANEL_API_TOKEN), never here.",
+      "properties": {
+        "driver": { "const": "cpanel" },
+        "host": { "type": "string", "description": "cPanel server hostname." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 2083 },
+        "ssh_port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+        "username": { "type": "string", "description": "cPanel account username." },
+        "subdomain": { "type": "string", "description": "Subdomain label to create (e.g. 'app')." },
+        "root_domain": { "type": "string", "description": "The account's main domain (e.g. 'example.com')." },
+        "docroot": { "type": "string", "description": "Docroot relative to home; default public_html/<subdomain>." },
+        "transfer": { "enum": ["ftps", "rsync"], "default": "ftps" },
+        "create_ftp": { "type": "boolean", "default": false, "description": "Also create a scoped FTP account." },
+        "ftp_user": { "type": "string", "description": "FTP account name (required if create_ftp)." },
+        "secret_ref": { "type": "string", "description": "Name of the secret holding the cPanel API token." }
+      }
     },
 
     "targetVps": {

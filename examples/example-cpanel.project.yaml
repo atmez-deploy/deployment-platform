@@ -1,0 +1,42 @@
+# Example: a STATIC site auto-deployed to a cPanel-based shared host. Unlike Hostinger
+# shared, cPanel's UAPI lets the platform CREATE the subdomain (and optionally an FTP
+# account) programmatically — so onboarding is fully automated. SSL is handled by cPanel
+# AutoSSL. Only the API token (and FTP password, if creating an account) are secrets.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-cpanel
+  description: Generic static site on a cPanel host (auto-provisioned)
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-cpanel
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: cpanel
+      host: server.example-host.com
+      port: 2083
+      username: acctuser
+      subdomain: app
+      root_domain: example.com
+      docroot: public_html/app
+      transfer: ftps
+      create_ftp: false
+      secret_ref: example_cpanel_api_token
+    build:
+      command: npm ci && npm run build
+      output_dir: dist
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: app.example.com
+          ssl: managed_by_provider
