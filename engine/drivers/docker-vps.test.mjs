@@ -1,45 +1,16 @@
-// Unit tests for the compose-based docker-vps blue/green plan. Run: node --test
+// Unit tests for the deploy-backend.sh-aligned docker-vps plan. Run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planDeploy, planRollback } from "./docker-vps.mjs";
 
 const services = [
-  {
-    name: "backend",
-    image: "ghcr.io/org/acadlynk-backend:abc123",
-    containerPort: 3000,
-    hostPortBlue: 5001,
-    hostPortGreen: 5002,
-    domain: "api.acadlynk.com",
-    ssl: true,
-    envFromSecret: "BACKEND_ENV",
-    volumes: ["/opt/acadlynk/shared/uploads:/app/uploads"],
-    healthPath: "/health",
-  },
-  {
-    name: "web",
-    image: "ghcr.io/org/acadlynk-web:abc123",
-    containerPort: 80,
-    hostPortBlue: 8095,
-    hostPortGreen: 8096,
-    domain: "acadlynk.com",
-    ssl: true,
-  },
-  {
-    name: "admin",
-    role: "admin",
-    image: "ghcr.io/org/acadlynk-admin:abc123",
-    containerPort: 80,
-    hostPortBlue: 8091,
-    hostPortGreen: 8094,
-    domain: "admin.acadlynk.com",
-    ssl: true,
-  },
+  { name: "backend", image: "ghcr.io/org/acadlynk-backend:abc123", containerPort: 3000, hostPortBlue: 5001, hostPortGreen: 5002, domain: "api.acadlynk.com", ssl: true, envFromSecret: "BACKEND_ENV", volumes: ["/opt/acadlynk/shared/uploads:/app/uploads"] },
+  { name: "web", image: "ghcr.io/org/acadlynk-web:abc123", containerPort: 80, hostPortBlue: 8095, hostPortGreen: 8096, domain: "acadlynk.com", ssl: true },
+  { name: "admin", role: "admin", image: "ghcr.io/org/acadlynk-admin:abc123", containerPort: 80, hostPortBlue: 8091, hostPortGreen: 8094, domain: "admin.acadlynk.com", ssl: true },
 ];
-
 const base = { project: "acadlynk", environment: "production", services };
 
-test("deploy plan has the compose blue/green sequence", () => {
+test("deploy plan follows the deploy-backend.sh sequence", () => {
   const types = planDeploy(base).steps.map((s) => s.type);
   assert.deepEqual(types, [
     "determine_active",
@@ -47,55 +18,55 @@ test("deploy plan has the compose blue/green sequence", () => {
     "ensure_network",
     "write_env",
     "write_compose",
-    "compose_pull_idle",
-    "compose_up_idle",
-    "health_check_idle",
-    "nginx_write",
+    "compose_pull_target",
+    "compose_up_target",
+    "health_check_target",
+    "bootstrap_nginx_if_missing",
+    "switch_ports",
     "nginx_reload",
-    "certbot",
-    "verify_live",
     "write_active_marker",
+    "verify_live",
+    "compose_down_old",
   ]);
+});
+
+test("switch_ports carries per-service port vars for both colors", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "switch_ports");
+  const backend = step.portVars.find((p) => p.var === "backend_port");
+  assert.deepEqual({ blue: backend.blue, green: backend.green }, { blue: 5001, green: 5002 });
+  assert.equal(step.portVars.length, 3);
+});
+
+test("health check uses /api/health for backend and / for others", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "health_check_target");
+  const byName = Object.fromEntries(step.services.map((s) => [s.name, s.path]));
+  assert.equal(byName.backend, "/api/health");
+  assert.equal(byName.web, "/");
+});
+
+test("bootstrap step carries ssl domains for first-time certbot", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "bootstrap_nginx_if_missing");
+  assert.deepEqual(step.sslDomains.sort(), ["acadlynk.com", "admin.acadlynk.com", "api.acadlynk.com"].sort());
 });
 
 test("db enabled inserts write_file + compose_up before app", () => {
   const types = planDeploy({ ...base, db: { enabled: true, hostPort: 5433 } }).steps.map((s) => s.type);
-  assert.ok(types.indexOf("compose_up") < types.indexOf("compose_up_idle"));
+  assert.ok(types.indexOf("compose_up") < types.indexOf("compose_up_target"));
 });
 
-test("migration inserted after compose_up_idle, before health check", () => {
+test("migration runs after compose_up_target, before health check", () => {
   const types = planDeploy({ ...base, migrate: { service: "backend", command: "npm run migrate" } }).steps.map((s) => s.type);
-  assert.ok(types.indexOf("migrate") > types.indexOf("compose_up_idle"));
-  assert.ok(types.indexOf("migrate") < types.indexOf("health_check_idle"));
-});
-
-test("write_compose carries both colors' compose text with correct ports", () => {
-  const step = planDeploy(base).steps.find((s) => s.type === "write_compose");
-  assert.match(step.blueContent, /"127\.0\.0\.1:5001:3000"/);
-  assert.match(step.greenContent, /"127\.0\.0\.1:5002:3000"/);
-});
-
-test("nginx content includes admin /api -> backend port and uploads alias", () => {
-  const step = planDeploy(base).steps.find((s) => s.type === "nginx_write");
-  assert.match(step.blueContent, /set \$backend_port 5001;/);
-  assert.match(step.blueContent, /location \/uploads\/ \{/);
-});
-
-test("certbot step only present when a service requests ssl:true", () => {
-  const noSsl = planDeploy({ ...base, services: services.map((s) => ({ ...s, ssl: false })) });
-  assert.ok(!noSsl.steps.some((s) => s.type === "certbot"));
-});
-
-test("verify_live marks ssl per service (https vs http)", () => {
-  const step = planDeploy(base).steps.find((s) => s.type === "verify_live");
-  assert.ok(step.checks.every((c) => c.ssl === true));
+  assert.ok(types.indexOf("migrate") > types.indexOf("compose_up_target"));
+  assert.ok(types.indexOf("migrate") < types.indexOf("health_check_target"));
 });
 
 test("rejects a malformed image ref", () => {
   assert.throws(() => planDeploy({ ...base, services: [{ ...services[0], image: "bad ref" }] }), /invalid image reference/);
 });
 
-test("rollback repoints nginx to the other color, no compose up", () => {
+test("rollback brings previous color up, sed-switches ports back, no down", () => {
   const types = planRollback(base).steps.map((s) => s.type);
-  assert.deepEqual(types, ["determine_active", "assert_other_up", "nginx_write", "nginx_reload", "verify_live", "write_active_marker"]);
+  assert.deepEqual(types, ["determine_active", "compose_up_old", "switch_ports", "nginx_reload", "write_active_marker_old", "verify_live"]);
+  const sp = planRollback(base).steps.find((s) => s.type === "switch_ports");
+  assert.equal(sp.portVars[0].color, "old");
 });
