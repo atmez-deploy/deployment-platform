@@ -244,12 +244,13 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command", "output_dir"],
-      "description": "How CI produces the static artifact. Runs in CI, not on the target.",
+      "required": ["output_dir"],
+      "description": "How CI produces the static artifact. Language-independent: `command` is any shell command (npm/hugo/bundle/make/...). Omit `command` for a no-build site that is served as-is from output_dir. Optionally run the build inside `image` so the toolchain isn't tied to the CI runner.",
       "properties": {
-        "command": { "type": "string", "description": "Build command, e.g. 'npm ci && npm run build'." },
-        "output_dir": { "type": "string", "description": "Directory containing the built site, e.g. 'dist'." },
-        "node_version": { "type": "string" }
+        "command": { "type": "string", "description": "Build command (any language), e.g. 'npm ci && npm run build', 'hugo', 'bundle exec jekyll build'. Omit for no build." },
+        "output_dir": { "type": "string", "description": "Directory containing the site to publish, e.g. 'dist', 'public', '_site', or '.' for a no-build repo." },
+        "image": { "type": "string", "description": "Optional container image to run the build in (e.g. 'golang:1.22', 'ruby:3.3', 'klakegg/hugo'). Keeps the build toolchain independent of the runner." },
+        "node_version": { "type": "string", "description": "Optional Node version hint (only relevant for Node builds)." }
       }
     },
 

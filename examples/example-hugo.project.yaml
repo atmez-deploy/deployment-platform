@@ -1,0 +1,35 @@
+# Example: a Hugo (Go-based) static site built in a container image — NOT Node.
+# Shows the platform is language-independent: build.command is any command, and
+# build.image runs it in the right toolchain (no npm involved).
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-hugo
+  description: Hugo static site (Go toolchain via build.image)
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-hugo
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: vps
+      ref: vps-01
+    build:
+      command: hugo --minify
+      output_dir: public
+      image: klakegg/hugo:latest   # build runs in this container, not on the runner
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: www.example.com
+          ssl: true
+        release_strategy: symlink

@@ -61,6 +61,8 @@ jobs:
           ref: ${{ inputs.platform_ref }}
           path: _platform
 
+      # Node is set up only so the ENGINE (js-yaml) runs — NOT for the app build.
+      # The app build uses whatever the project declares (any language) or a build.image.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -69,18 +71,38 @@ jobs:
         working-directory: _platform
         run: npm install
 
-      # 3. Build the site from the config's build block (or a placeholder for demo)
+      # 3. Build the site using the project's OWN build.command (language-independent).
+      #    - build.command present  -> run it exactly (npm / hugo / bundle / make / etc.)
+      #    - build.image present     -> run the command inside that container (toolchain
+      #                                  not tied to the runner)
+      #    - build omitted / no cmd  -> no build; serve output_dir as-is (plain HTML, etc.)
       - name: Build
         id: build
         run: |
           CONFIG="${{ inputs.config }}"
           ENVN="${{ inputs.environment }}"
-          node -e "const y=require('./_platform/node_modules/js-yaml');const fs=require('fs');const c=y.load(fs.readFileSync(process.argv[1],'utf8'));const e=c.environments[process.argv[2]];if(!e||!e.build){console.error('no build block for env');process.exit(1)};console.log(e.build.command);console.log(e.build.output_dir)" "$CONFIG" "$ENVN" > .binfo
-          CMD=$(sed -n 1p .binfo); OUT=$(sed -n 2p .binfo)
+          # Extract build.command, build.output_dir, build.image from the config via the engine's js-yaml.
+          node -e "const y=require('./_platform/node_modules/js-yaml');const fs=require('fs');const c=y.load(fs.readFileSync(process.argv[1],'utf8'));const e=(c.environments||{})[process.argv[2]]||{};const b=e.build||{};console.log(b.command||'');console.log(b.output_dir||'dist');console.log(b.image||'')" "$CONFIG" "$ENVN" > .binfo
+          CMD=$(sed -n 1p .binfo); OUT=$(sed -n 2p .binfo); IMG=$(sed -n 3p .binfo)
           echo "output_dir=$OUT" >> "$GITHUB_OUTPUT"
-          if [ -f package.json ] && grep -q '"build"' package.json; then eval "$CMD" || true; fi
+
+          if [ -n "$CMD" ]; then
+            if [ -n "$IMG" ]; then
+              echo "Building in container image: $IMG"
+              docker run --rm -v "$PWD:/src" -w /src "$IMG" sh -lc "$CMD"
+            else
+              echo "Building on runner: $CMD"
+              sh -lc "$CMD"
+            fi
+          else
+            echo "No build.command declared — serving '$OUT' as-is."
+          fi
+
           mkdir -p "$OUT"
-          [ -f "$OUT/index.html" ] || echo "<h1>atmez-deploy</h1><p>${{ github.sha }}</p>" > "$OUT/index.html"
+          # Demo safety net ONLY when the project produced nothing to serve.
+          if [ -z "$(ls -A "$OUT" 2>/dev/null)" ]; then
+            echo "<h1>atmez-deploy</h1><p>${{ github.sha }}</p>" > "$OUT/index.html"
+          fi
 
       # 4. Publish via the engine
       - name: Deploy

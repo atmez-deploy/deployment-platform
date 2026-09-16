@@ -1,0 +1,40 @@
+# Example: a NO-BUILD static site (plain HTML/CSS/JS committed in the repo). No npm,
+# no toolchain — the files in output_dir are served as-is. Demonstrates that deployment
+# is language/tooling independent: omit build.command entirely.
+# Validate against ../schemas/project.schema.json
+schema_version: "1.0"
+
+project:
+  name: example-plainhtml
+  description: Plain static HTML site, no build step
+  owner: platform-team
+
+repository:
+  organization: example-org
+  repository: example-plainhtml
+  default_branch: main
+
+environments:
+
+  production:
+    deployment:
+      type: static
+    target:
+      driver: hostinger
+      host: ftp.example.com
+      port: 21
+      username: u123456789
+      auth: ftps
+      webroot: public_html
+      transfer: ftps
+      secret_ref: example_plainhtml_password
+    build:
+      # no `command` -> nothing is built; the repo's ./public folder is published as-is
+      output_dir: public
+    services:
+      site:
+        exposure:
+          type: domain
+          domain: www.example.com
+          ssl: managed_by_provider
+        release_strategy: ftps_upload
