@@ -28,7 +28,14 @@ Static deployment runs the project's own `build.command` verbatim. It is not tie
 | Plain HTML (no build)| *(omit command)*                  | `public`  |
 | Anything with a Make | `make site`                       | `out`     |
 
-Two knobs make this fully general:
+Three knobs make this fully general:
+- **`output_dir` is optional** → if you omit it, the platform **auto-detects** the folder
+  the build produced. It snapshots the top-level dirs before the build, runs the build,
+  then picks the folder that was created/changed (preferring known names: dist, out, build,
+  public, _site, .output/public, www). If detection is ambiguous (several unknown folders
+  changed, or nothing changed) it fails with a clear message asking you to set `output_dir`.
+  So `out` vs `dist` vs `public` "just works" without you declaring it — but you can always
+  set it explicitly and that wins.
 - **Omit `build.command`** → no build; the files in `output_dir` are published as-is.
 - **`build.image`** → run the build inside a container (e.g. `golang:1.22`, `ruby:3.3`,
   `klakegg/hugo`) so the toolchain is independent of the CI runner. Without it, the command
