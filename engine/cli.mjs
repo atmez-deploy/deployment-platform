@@ -30,10 +30,19 @@ import { resolveTarget } from "./registry.mjs";
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = { command, execute: false };
+  const camel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--execute") opts.execute = true;
-    else if (a.startsWith("--")) opts[a.slice(2)] = rest[++i];
+    if (a === "--execute") { opts.execute = true; continue; }
+    if (!a.startsWith("--")) continue;
+    const key = camel(a.slice(2));
+    const val = rest[++i];
+    if (key === "image") {
+      // repeatable: accumulate into an array
+      opts.image = [].concat(opts.image ?? [], val);
+    } else {
+      opts[key] = val;
+    }
   }
   return opts;
 }
@@ -143,54 +152,86 @@ function main() {
       break;
     }
 
-    // ---- docker service (vps) ----
+    // ---- docker services (vps, compose blue/green) ----
+    // Deploys ALL services in the environment together (compose model). Images are given
+    // as --image name=ref pairs (repeatable), or a single --image ref applied to a lone
+    // service. Per-color host ports: the registry-allocated port is BLUE; GREEN = BLUE +
+    // --color-offset (default 1) unless the registry records an explicit green port.
     case "deploy-service":
     case "rollback-service": {
-      if (!opts.service) fail("--service is required");
       if (!opts.registry) fail("--registry <path> is required");
       const t = envConfig.target;
       if (t?.driver !== "vps") fail(`expected 'vps' driver for ${opts.command} (got '${t?.driver}')`);
-      const project = loadYaml(opts.config)?.project?.name;
+      const cfg = loadYaml(opts.config);
+      const project = cfg?.project?.name;
       const registry = loadYaml(opts.registry);
-      const { vps, port, domain } = serviceAllocation(registry, t.ref, project, opts.env, opts.service);
-      if (!Number.isInteger(port)) fail(`no port allocated for service '${opts.service}'`);
-      if (!domain) fail(`no domain allocated for service '${opts.service}'`);
+      const vps = resolveTarget(registry, t.ref);
+      const colorOffset = Number(opts.colorOffset ?? 1);
+
+      // parse --image (repeatable): "name=ref" or a bare "ref" for a single service
+      const images = {};
+      for (const spec of [].concat(opts.image ?? [])) {
+        if (spec.includes("=")) {
+          const [n, ref] = spec.split("=");
+          images[n] = ref;
+        } else {
+          images.__single = spec;
+        }
+      }
+
+      const rec = (vps.projects ?? []).find((p) => p.project === project && p.environment === opts.env);
+      if (!rec) fail(`${project}/${opts.env} not registered on ${t.ref}`);
+      const portOf = (svcName) => (rec.allocations?.ports ?? []).find((p) => p.service === svcName)?.port;
+      const domainOf = (svcName) => (rec.allocations?.domains ?? []).find((d) => d.service === svcName)?.domain;
+
+      const svcNames = Object.keys(envConfig.services ?? {});
+      if (svcNames.length === 0) fail("no services in this environment");
+
+      const services = svcNames.map((name) => {
+        const svc = envConfig.services[name];
+        const blue = portOf(name);
+        if (!Number.isInteger(blue)) fail(`no port allocated for service '${name}' in the registry`);
+        const image = images[name] ?? (svcNames.length === 1 ? images.__single : undefined);
+        if (opts.command === "deploy-service" && !image) fail(`no --image provided for service '${name}'`);
+        return {
+          name,
+          role: svc.role,
+          image,
+          containerPort: svc.container_port ?? (name === "backend" ? 3000 : 80),
+          hostPortBlue: blue,
+          hostPortGreen: blue + colorOffset,
+          domain: domainOf(name) ?? svc.exposure?.domain,
+          ssl: svc.exposure?.ssl === true,
+          envFromSecret: svc.env_secret, // env var name holding the .env contents
+          volumes: svc.volumes,
+          healthPath: svc.health?.path ?? "/",
+        };
+      });
 
       const connection = {
         host: vps.connection.host,
         port: vps.connection.port ?? 22,
         username: vps.connection.username,
       };
-      const svc = envConfig.services?.[opts.service] ?? {};
-      const ssl = svc.exposure?.ssl ?? false;
+      const basePath = vps.base_path ?? "/opt";
+      const db = envConfig.database
+        ? { enabled: true, hostPort: envConfig.database.host_port, volumeName: `${project}_postgres_data` }
+        : {};
 
-      if (opts.command === "deploy-service") {
-        if (!opts.image) fail("--image <ref> is required for deploy-service");
-        const plan = dockerVps.planDeploy({
-          project,
-          environment: opts.env,
-          service: opts.service,
-          image: opts.image,
-          port,
-          domain,
-          ssl,
-          health: svc.health ?? {},
-          migrate: envConfig.database?.migrate ? { command: envConfig.database.migrate_command ?? "true" } : null,
-          basePath: vps.base_path ?? "/opt/deployments",
-        });
-        run(opts.command, plan, connection);
-      } else {
-        const plan = dockerVps.planRollback({
-          project,
-          environment: opts.env,
-          service: opts.service,
-          port,
-          domain,
-          ssl,
-          basePath: vps.base_path ?? "/opt/deployments",
-        });
-        run(opts.command, plan, connection);
-      }
+      const plan =
+        opts.command === "deploy-service"
+          ? dockerVps.planDeploy({
+              project,
+              environment: opts.env,
+              services,
+              db,
+              basePath,
+              migrate: envConfig.database?.migrate
+                ? { service: "backend", command: envConfig.database.migrate_command ?? "true" }
+                : null,
+            })
+          : dockerVps.planRollback({ project, environment: opts.env, services, basePath });
+      run(opts.command, plan, connection);
       break;
     }
 

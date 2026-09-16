@@ -1,4 +1,4 @@
-// Unit tests for docker-vps -> command compilation. Run: node --test
+// Unit tests for compose-based docker-vps -> command compilation. Run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -6,58 +6,59 @@ import { planDeploy, planRollback } from "./drivers/docker-vps.mjs";
 import { toCommands, renderCommands } from "./executor.mjs";
 
 const conn = { host: "10.0.0.5", port: 22, username: "platform" };
-const base = {
-  project: "example-app",
-  environment: "staging",
-  service: "backend",
-  image: "ghcr.io/example-org/example-app-backend:abc123",
-  port: 5001,
-  domain: "api.staging.example.com",
-  health: { path: "/api/health", expect_status: 200, retries: 3, timeout_seconds: 10 },
-};
+const services = [
+  {
+    name: "backend",
+    image: "ghcr.io/org/acadlynk-backend:abc123",
+    containerPort: 3000,
+    hostPortBlue: 5001,
+    hostPortGreen: 5002,
+    domain: "api.acadlynk.com",
+    ssl: true,
+    envFromSecret: "BACKEND_ENV",
+    healthPath: "/health",
+  },
+  { name: "web", image: "ghcr.io/org/acadlynk-web:abc123", containerPort: 80, hostPortBlue: 8095, hostPortGreen: 8096, domain: "acadlynk.com", ssl: true },
+];
+const base = { project: "acadlynk", environment: "production", services };
 
-test("deploy compiles to ssh-wrapped docker commands", () => {
+test("deploy compiles to ssh-wrapped compose/nginx/certbot commands", () => {
   const cmds = toCommands(planDeploy(base), conn, { keyPath: "/tmp/k" });
   assert.ok(cmds.every((c) => c.bin === "ssh"));
   const joined = cmds.map((c) => c.args.at(-1)).join("\n");
-  assert.match(joined, /docker network inspect .*example-app-staging-network/);
-  assert.match(joined, /docker pull 'ghcr\.io\/example-org\/example-app-backend:abc123'/);
-  assert.match(joined, /docker run -d --name example-app-staging-backend-\$IDLE/);
-  assert.match(joined, /-p 127\.0\.0\.1:5001:5001/);
+  assert.match(joined, /docker network inspect 'acadlynk-production-network'/);
+  assert.match(joined, /docker compose -f 'e?\/?opt\/acadlynk\/'?\$IDLE\/docker-compose\.app\.yml pull|docker compose -f '\/opt\/acadlynk'\/\$IDLE/);
+  assert.match(joined, /docker compose .*\$IDLE\/docker-compose\.app\.yml up -d/);
+  assert.match(joined, /certbot --nginx/);
 });
 
-test("health check probes the container port with retry loop", () => {
+test("write_env streams the secret from an env var, not a literal", () => {
   const cmds = toCommands(planDeploy(base), conn, { keyPath: "/tmp/k" });
-  const health = cmds.find((c) => c.label.startsWith("health_check"));
-  const cmd = health.args.at(-1);
-  assert.match(cmd, /seq 1 4/); // retries 3 => 4 attempts
-  assert.match(cmd, /127\.0\.0\.1:5001\/api\/health/);
-  assert.match(cmd, /"200"/);
+  const env = cmds.find((c) => c.label.startsWith("write_env"));
+  const cmd = env.args.at(-1);
+  assert.match(cmd, /printf '%s' "\$BACKEND_ENV"/);
+  assert.match(cmd, /chmod 600/);
 });
 
-test("nginx_write uses a heredoc containing the rendered config", () => {
+test("nginx_write picks the idle color's config and symlinks enabled", () => {
   const cmds = toCommands(planDeploy(base), conn, { keyPath: "/tmp/k" });
-  const write = cmds.find((c) => c.label.startsWith("nginx_write"));
-  const cmd = write.args.at(-1);
-  assert.match(cmd, /cat > '\/etc\/nginx\/sites-enabled\/example-app-staging-backend\.conf'/);
-  assert.match(cmd, /server 127\.0\.0\.1:5001;/);
+  const nx = cmds.find((c) => c.label.startsWith("nginx_write"));
+  const cmd = nx.args.at(-1);
+  assert.match(cmd, /if \[ "\$IDLE" = blue \]/);
+  assert.match(cmd, /ln -sfn '\/etc\/nginx\/sites-available\/acadlynk' '\/etc\/nginx\/sites-enabled\/acadlynk'/);
 });
 
-test("stop_old stops the color opposite the (already-updated) marker", () => {
+test("verify_live uses https for ssl services", () => {
   const cmds = toCommands(planDeploy(base), conn, { keyPath: "/tmp/k" });
-  const stop = cmds.find((c) => c.label.startsWith("stop_old"));
-  const cmd = stop.args.at(-1);
-  // must derive OLD from the marker, not blindly stop a fixed color
-  assert.match(cmd, /OLD=green/);
-  assert.match(cmd, /OLD=blue/);
-  assert.match(cmd, /docker stop example-app-staging-backend-\$OLD/);
+  const v = cmds.find((c) => c.label.startsWith("verify_live"));
+  assert.match(v.args.at(-1), /https:\/\/api\.acadlynk\.com/);
 });
 
-test("rollback compiles to nginx switch commands only (no docker run/pull)", () => {
+test("rollback compiles to nginx switch only (no compose up/pull)", () => {
   const cmds = toCommands(planRollback(base), conn, { keyPath: "/tmp/k" });
   const joined = cmds.map((c) => c.args.at(-1)).join("\n");
-  assert.ok(!/docker pull/.test(joined));
-  assert.ok(!/docker run/.test(joined));
+  assert.ok(!/compose .*up -d/.test(joined));
+  assert.ok(!/compose .*pull/.test(joined));
   assert.match(joined, /nginx -t/);
 });
 

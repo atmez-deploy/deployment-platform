@@ -32,6 +32,7 @@ resources:
         allocations:
           ports:
             - { service: backend, port: 5000, pool: backend }
+            - { service: web, port: 8100, pool: web }
           domains:
             - { service: backend, domain: api.staging.example.com }
             - { service: web, domain: staging.example.com }

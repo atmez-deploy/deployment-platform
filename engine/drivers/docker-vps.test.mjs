@@ -1,79 +1,101 @@
-// Unit tests for the docker-vps blue/green plan generation. Run: node --test
+// Unit tests for the compose-based docker-vps blue/green plan. Run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planDeploy, planRollback } from "./docker-vps.mjs";
-import { otherColor, containerName, networkName } from "../naming.mjs";
 
-const base = {
-  project: "example-app",
-  environment: "staging",
-  service: "backend",
-  image: "ghcr.io/example-org/example-app-backend:abc123",
-  port: 5001,
-  domain: "api.staging.example.com",
-  health: { path: "/api/health", expect_status: 200 },
-};
+const services = [
+  {
+    name: "backend",
+    image: "ghcr.io/org/acadlynk-backend:abc123",
+    containerPort: 3000,
+    hostPortBlue: 5001,
+    hostPortGreen: 5002,
+    domain: "api.acadlynk.com",
+    ssl: true,
+    envFromSecret: "BACKEND_ENV",
+    volumes: ["/opt/acadlynk/shared/uploads:/app/uploads"],
+    healthPath: "/health",
+  },
+  {
+    name: "web",
+    image: "ghcr.io/org/acadlynk-web:abc123",
+    containerPort: 80,
+    hostPortBlue: 8095,
+    hostPortGreen: 8096,
+    domain: "acadlynk.com",
+    ssl: true,
+  },
+  {
+    name: "admin",
+    role: "admin",
+    image: "ghcr.io/org/acadlynk-admin:abc123",
+    containerPort: 80,
+    hostPortBlue: 8091,
+    hostPortGreen: 8094,
+    domain: "admin.acadlynk.com",
+    ssl: true,
+  },
+];
 
-test("naming helpers derive isolated names", () => {
-  assert.equal(otherColor("blue"), "green");
-  assert.equal(otherColor("green"), "blue");
-  assert.equal(containerName("p", "e", "s", "blue"), "p-e-s-blue");
-  assert.equal(networkName("p", "e"), "p-e-network");
-});
+const base = { project: "acadlynk", environment: "production", services };
 
-test("deploy plan has the blue/green step sequence in order", () => {
-  const plan = planDeploy(base);
-  const types = plan.steps.map((s) => s.type);
+test("deploy plan has the compose blue/green sequence", () => {
+  const types = planDeploy(base).steps.map((s) => s.type);
   assert.deepEqual(types, [
     "determine_active",
+    "ensure_dirs",
     "ensure_network",
-    "pull",
-    "run_container",
-    "health_check",
+    "write_env",
+    "write_compose",
+    "compose_pull_idle",
+    "compose_up_idle",
+    "health_check_idle",
     "nginx_write",
     "nginx_reload",
-    "verify_live",
-    "write_active_marker",
-    "stop_old",
-  ]);
-});
-
-test("migration step is inserted before health_check when configured", () => {
-  const plan = planDeploy({ ...base, migrate: { command: "npm run migrate" } });
-  const types = plan.steps.map((s) => s.type);
-  const migrateIdx = types.indexOf("migrate");
-  const healthIdx = types.indexOf("health_check");
-  assert.ok(migrateIdx !== -1 && migrateIdx < healthIdx);
-});
-
-test("nginx_write content targets the allocated port and upstream", () => {
-  const plan = planDeploy(base);
-  const write = plan.steps.find((s) => s.type === "nginx_write");
-  assert.match(write.content, /server 127\.0\.0\.1:5001;/);
-  assert.equal(plan.identity.upstreamName, "example-app-staging-backend");
-  assert.match(write.confPath, /example-app-staging-backend\.conf$/);
-});
-
-test("deploy plan is deterministic", () => {
-  assert.deepEqual(planDeploy(base), planDeploy(base));
-});
-
-test("rejects a non-immutable / malformed image ref", () => {
-  assert.throws(() => planDeploy({ ...base, image: "not a ref!!" }), /invalid image reference/);
-});
-
-test("rollback plan switches back via nginx without touching containers", () => {
-  const plan = planRollback(base);
-  const types = plan.steps.map((s) => s.type);
-  assert.deepEqual(types, [
-    "determine_active",
-    "assert_other_exists",
-    "nginx_write",
-    "nginx_reload",
+    "certbot",
     "verify_live",
     "write_active_marker",
   ]);
-  // no pull/run/stop in rollback
-  assert.ok(!types.includes("pull"));
-  assert.ok(!types.includes("stop_old"));
+});
+
+test("db enabled inserts write_file + compose_up before app", () => {
+  const types = planDeploy({ ...base, db: { enabled: true, hostPort: 5433 } }).steps.map((s) => s.type);
+  assert.ok(types.indexOf("compose_up") < types.indexOf("compose_up_idle"));
+});
+
+test("migration inserted after compose_up_idle, before health check", () => {
+  const types = planDeploy({ ...base, migrate: { service: "backend", command: "npm run migrate" } }).steps.map((s) => s.type);
+  assert.ok(types.indexOf("migrate") > types.indexOf("compose_up_idle"));
+  assert.ok(types.indexOf("migrate") < types.indexOf("health_check_idle"));
+});
+
+test("write_compose carries both colors' compose text with correct ports", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "write_compose");
+  assert.match(step.blueContent, /"127\.0\.0\.1:5001:3000"/);
+  assert.match(step.greenContent, /"127\.0\.0\.1:5002:3000"/);
+});
+
+test("nginx content includes admin /api -> backend port and uploads alias", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "nginx_write");
+  assert.match(step.blueContent, /set \$backend_port 5001;/);
+  assert.match(step.blueContent, /location \/uploads\/ \{/);
+});
+
+test("certbot step only present when a service requests ssl:true", () => {
+  const noSsl = planDeploy({ ...base, services: services.map((s) => ({ ...s, ssl: false })) });
+  assert.ok(!noSsl.steps.some((s) => s.type === "certbot"));
+});
+
+test("verify_live marks ssl per service (https vs http)", () => {
+  const step = planDeploy(base).steps.find((s) => s.type === "verify_live");
+  assert.ok(step.checks.every((c) => c.ssl === true));
+});
+
+test("rejects a malformed image ref", () => {
+  assert.throws(() => planDeploy({ ...base, services: [{ ...services[0], image: "bad ref" }] }), /invalid image reference/);
+});
+
+test("rollback repoints nginx to the other color, no compose up", () => {
+  const types = planRollback(base).steps.map((s) => s.type);
+  assert.deepEqual(types, ["determine_active", "assert_other_up", "nginx_write", "nginx_reload", "verify_live", "write_active_marker"]);
 });

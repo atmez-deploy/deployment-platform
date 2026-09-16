@@ -144,126 +144,114 @@ function staticToCommands(plan, conn, opts = {}) {
 }
 
 /**
- * Compile docker-vps blue/green plans to ssh + docker commands.
- * The active color is resolved on the VPS at run time via a marker file; for the
- * dry run / command view we express that as a shell expression the remote evaluates.
+ * Compile compose-based docker-vps blue/green plans to ssh + docker compose + nginx +
+ * certbot commands. The active color is resolved on the VPS at run time via the marker
+ * file; the IDLE color receives the new deploy. Both colors stay running.
  */
 function dockerVpsToCommands(plan, conn, opts = {}) {
   const { keyPath } = opts;
   const commands = [];
   const id = plan.identity;
+  const push = (label, remote) => {
+    const s = sshBase(conn, keyPath);
+    commands.push({ label, bin: s.bin, args: [...s.args, s.dest, remote] });
+  };
 
-  // Remote shell snippet that echoes the CURRENT live color (default blue), and the IDLE
-  // color = the other one. We compute both into shell vars the remote reuses per command.
+  // CUR = live color (default blue); IDLE = the other. Recomputed per remote command.
   const readColors =
     `CUR=$(cat ${shq(id.markerPath)} 2>/dev/null || echo blue); ` +
     `if [ "$CUR" = blue ]; then IDLE=green; else IDLE=blue; fi`;
 
-  const containerFor = (colorVar) =>
-    // e.g. example-app-staging-backend-$IDLE
-    `${id.project}-${id.environment}-${id.service}-$${colorVar}`;
+  // heredoc file write helper (content may contain quotes; the quoted delimiter is safe)
+  const writeFile = (path, content) => `mkdir -p "$(dirname ${shq(path)})"; cat > ${shq(path)} <<'ATMEZEOF'\n${content}ATMEZEOF`;
 
   for (const step of plan.steps) {
-    const s = sshBase(conn, keyPath);
     switch (step.type) {
       case "determine_active":
-        commands.push({
-          label: "determine_active (read live color marker)",
-          bin: s.bin,
-          args: [...s.args, s.dest, `${readColors}; echo "live=$CUR idle=$IDLE"`],
-        });
+        push("determine_active (read live color)", `${readColors}; echo "live=$CUR idle=$IDLE"`);
+        break;
+      case "ensure_dirs":
+        push("ensure_dirs", `mkdir -p ${step.dirs.map(shq).join(" ")}`);
         break;
       case "ensure_network":
-        commands.push({
-          label: `ensure_network ${step.network}`,
-          bin: s.bin,
-          args: [...s.args, s.dest, `docker network inspect ${shq(step.network)} >/dev/null 2>&1 || docker network create ${shq(step.network)}`],
-        });
+        push(`ensure_network ${step.network}`, `docker network inspect ${shq(step.network)} >/dev/null 2>&1 || docker network create ${shq(step.network)}`);
         break;
-      case "pull":
-        commands.push({
-          label: `pull ${step.image}`,
-          bin: s.bin,
-          args: [...s.args, s.dest, `docker pull ${shq(step.image)}`],
-        });
+      case "write_file":
+        push(`write_file ${step.path}`, writeFile(step.path, step.content));
         break;
-      case "run_container": {
-        const name = containerFor("IDLE");
-        const run =
-          `${readColors}; ` +
-          `docker rm -f ${name} >/dev/null 2>&1 || true; ` +
-          `docker run -d --name ${name} --network ${shq(step.network)} ` +
-          `-p 127.0.0.1:${step.port}:${step.port} --restart unless-stopped ${shq(step.image)}`;
-        commands.push({ label: "run_container (idle color)", bin: s.bin, args: [...s.args, s.dest, run] });
+      case "write_env":
+        // secret contents come from an env var at run time; never embedded in the plan
+        push(`write_env ${step.path} (from $${step.secretName})`, `mkdir -p "$(dirname ${shq(step.path)})"; printf '%s' "$${step.secretName}" > ${shq(step.path)}; chmod 600 ${shq(step.path)}`);
+        break;
+      case "write_compose":
+        push("write_compose (blue)", writeFile(step.blueFile, step.blueContent));
+        push("write_compose (green)", writeFile(step.greenFile, step.greenContent));
+        break;
+      case "compose_up": {
+        const env = step.envFile ? `--env-file ${shq(step.envFile)} ` : "";
+        push(`compose_up ${step.file}`, `docker compose ${env}-f ${shq(step.file)} up -d`);
         break;
       }
-      case "migrate": {
-        const name = containerFor("IDLE");
-        const cmd = `${readColors}; docker exec ${name} sh -lc ${shq(step.command)}`;
-        commands.push({ label: "migrate (in new container)", bin: s.bin, args: [...s.args, s.dest, cmd] });
+      case "compose_pull_idle":
+        push("compose_pull_idle", `${readColors}; docker compose -f ${shq(step.projectRoot)}/$IDLE/docker-compose.app.yml pull`);
         break;
-      }
-      case "health_check": {
-        const probe =
-          `for i in $(seq 1 ${step.retries + 1}); do ` +
-          `code=$(curl -s -o /dev/null -w '%{http_code}' --max-time ${step.timeoutSeconds} ` +
-          `http://127.0.0.1:${step.port}${step.path} || true); ` +
-          `if [ "$code" = "${step.expectStatus}" ]; then echo healthy; exit 0; fi; sleep 2; done; ` +
-          `echo unhealthy; exit 1`;
-        commands.push({ label: `health_check ${step.path}`, bin: s.bin, args: [...s.args, s.dest, probe] });
+      case "compose_up_idle":
+        push("compose_up_idle", `${readColors}; docker compose -f ${shq(step.projectRoot)}/$IDLE/docker-compose.app.yml up -d`);
+        break;
+      case "migrate":
+        push(`migrate (${step.service})`, `${readColors}; docker exec ${id.project}-$IDLE-${step.service}-1 sh -lc ${shq(step.command)}`);
+        break;
+      case "health_check_idle": {
+        // probe each domain-exposed service on the IDLE color's port
+        const probes = step.services
+          .map(
+            (svc) =>
+              `P=$([ "$IDLE" = blue ] && echo ${svc.blue} || echo ${svc.green}); ` +
+              `ok=0; for i in $(seq 1 6); do code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:$P${svc.path} || true); ` +
+              `if [ "$code" = 200 ] || [ "$code" = 301 ] || [ "$code" = 302 ]; then ok=1; break; fi; sleep 2; done; ` +
+              `[ "$ok" = 1 ] || (echo "unhealthy ${svc.name} on :$P"; exit 1)`,
+          )
+          .join("; ");
+        push("health_check_idle (probe idle color ports)", `${readColors}; ${probes}`);
         break;
       }
       case "nginx_write": {
-        // write the rendered config via a heredoc, guarding the marker on the content
-        const write = `cat > ${shq(step.confPath)} <<'ATMEZEOF'\n${step.content}ATMEZEOF`;
-        commands.push({ label: `nginx_write ${step.confPath}`, bin: s.bin, args: [...s.args, s.dest, write] });
+        // choose the IDLE color's rendered config, write to sites-available, symlink enabled
+        const write =
+          `${readColors}; ` +
+          `if [ "$IDLE" = blue ]; then cat > ${shq(step.availPath)} <<'ATMEZEOF'\n${step.blueContent}ATMEZEOF\n` +
+          `else cat > ${shq(step.availPath)} <<'ATMEZEOF'\n${step.greenContent}ATMEZEOF\n fi; ` +
+          `ln -sfn ${shq(step.availPath)} ${shq(step.enabledPath)}`;
+        push(`nginx_write ${step.availPath}`, write);
         break;
       }
       case "nginx_reload":
-        commands.push({
-          label: "nginx_reload (test + reload)",
-          bin: s.bin,
-          args: [...s.args, s.dest, `nginx -t && (systemctl reload nginx || nginx -s reload)`],
-        });
+        push("nginx_reload (test + reload)", `nginx -t && (systemctl reload nginx || nginx -s reload)`);
         break;
-      case "verify_live":
-        commands.push({
-          label: `verify_live ${step.domain}`,
-          bin: s.bin,
-          args: [
-            ...s.args,
-            s.dest,
-            `code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: ${step.domain}' http://127.0.0.1/ || true); ` +
-              `[ "$code" = "${step.expectStatus}" ] || (echo "got $code"; exit 1)`,
-          ],
-        });
-        break;
-      case "write_active_marker": {
-        // after a successful switch, the live color becomes the previously-idle one
-        const cmd = `${readColors}; mkdir -p "$(dirname ${shq(step.markerPath)})"; echo "$IDLE" > ${shq(step.markerPath)}`;
-        commands.push({ label: "write_active_marker", bin: s.bin, args: [...s.args, s.dest, cmd] });
+      case "certbot": {
+        const domainArgs = step.domains.map((d) => `-d ${shq(d)}`).join(" ");
+        // idempotent: --keep-until-expiring won't re-issue if a valid cert exists
+        push(`certbot ${step.domains.join(",")}`, `certbot --nginx --non-interactive --agree-tos --keep-until-expiring ${domainArgs} || echo "certbot skipped/failed (continuing)"`);
         break;
       }
-      case "assert_other_exists": {
-        const other = containerFor("IDLE");
-        commands.push({
-          label: "assert_other_exists (previous color container running)",
-          bin: s.bin,
-          args: [...s.args, s.dest, `${readColors}; docker ps --format '{{.Names}}' | grep -qx ${other} || (echo "previous container missing"; exit 1)`],
-        });
+      case "verify_live": {
+        const checks = step.checks
+          .map((c) => {
+            const scheme = c.ssl ? "https" : "http";
+            return `code=$(curl -sk -o /dev/null -w '%{http_code}' ${scheme}://${c.domain}${c.path} || true); ` +
+              `case "$code" in 200|301|302) : ;; *) echo "verify failed ${c.domain} ($code)"; exit 1;; esac`;
+          })
+          .join("; ");
+        push("verify_live (per domain)", checks);
         break;
       }
-      case "stop_old": {
-        // Runs AFTER write_active_marker, so the marker already holds the NEW live color.
-        // The container to stop is therefore the OTHER color relative to the marker.
-        const old = `${id.project}-${id.environment}-${id.service}-$OLD`;
-        const cmd =
-          `LIVE=$(cat ${shq(id.markerPath)} 2>/dev/null || echo blue); ` +
-          `if [ "$LIVE" = blue ]; then OLD=green; else OLD=blue; fi; ` +
-          `docker stop ${old} >/dev/null 2>&1 || true; docker rm ${old} >/dev/null 2>&1 || true`;
-        commands.push({ label: "stop_old (previous color)", bin: s.bin, args: [...s.args, s.dest, cmd] });
+      case "assert_other_up":
+        push("assert_other_up (previous color running)", `${readColors}; docker ps --format '{{.Names}}' | grep -q "${id.project}-$CUR-" || (echo "previous color not running"; exit 1)`);
         break;
-      }
+      case "write_active_marker":
+        // after a successful switch, live color becomes the previously-idle one
+        push("write_active_marker", `${readColors}; mkdir -p "$(dirname ${shq(step.markerPath)})"; echo "$IDLE" > ${shq(step.markerPath)}`);
+        break;
       default:
         throw new Error(`unknown docker-vps step type: ${step.type}`);
     }

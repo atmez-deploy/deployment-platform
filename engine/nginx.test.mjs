@@ -1,32 +1,71 @@
-// Unit tests for nginx config rendering. Run: node --test
+// Unit tests for nginx config generation (acadlynk-style). Run: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderSiteConfig } from "./nginx.mjs";
+import { renderProjectNginx } from "./nginx.mjs";
 
-test("renders an upstream + server block pointing at the port", () => {
-  const cfg = renderSiteConfig({
-    domain: "api.example.com",
-    port: 5001,
-    upstreamName: "example-app-staging-backend",
+const uploadsPath = "/opt/acadlynk/shared/uploads";
+
+test("renders a server block per service with set $port and snippet includes", () => {
+  const cfg = renderProjectNginx({
+    project: "acadlynk",
+    uploadsPath,
+    blocks: [
+      { service: "web", domain: "acadlynk.com", port: 8096 },
+      { service: "backend", domain: "api.acadlynk.com", port: 5002 },
+    ],
   });
-  assert.match(cfg, /upstream example-app-staging-backend \{/);
-  assert.match(cfg, /server 127\.0\.0\.1:5001;/);
-  assert.match(cfg, /server_name api\.example\.com;/);
-  assert.match(cfg, /proxy_pass http:\/\/example-app-staging-backend;/);
+  assert.match(cfg, /server_name acadlynk\.com;/);
+  assert.match(cfg, /set \$web_port 8096;/);
+  assert.match(cfg, /set \$backend_port 5002;/);
+  assert.match(cfg, /include \/etc\/nginx\/snippets\/security\.conf;/);
+  assert.match(cfg, /include \/etc\/nginx\/snippets\/proxy\.conf;/);
 });
 
-test("ssl:true emits an explicit TODO note (no fake TLS)", () => {
-  const cfg = renderSiteConfig({ domain: "x.com", port: 8100, upstreamName: "u", ssl: true });
-  assert.match(cfg, /TODO\(ssl\)/);
+test("backend role gets /uploads alias + php-deny guard", () => {
+  const cfg = renderProjectNginx({
+    project: "acadlynk",
+    uploadsPath,
+    blocks: [{ service: "backend", domain: "api.acadlynk.com", port: 5002 }],
+  });
+  assert.match(cfg, /location \/uploads\/ \{/);
+  assert.match(cfg, /alias \/opt\/acadlynk\/shared\/uploads\/;/);
+  assert.match(cfg, /\^\/uploads\/\.\*\\\.\(php/);
+});
+
+test("admin role proxies /api/ to the backend port", () => {
+  const cfg = renderProjectNginx({
+    project: "acadlynk",
+    uploadsPath,
+    blocks: [{ service: "admin", domain: "admin.acadlynk.com", port: 8094, backendPort: 5002 }],
+  });
+  assert.match(cfg, /set \$backend_port 5002;/);
+  assert.match(cfg, /location \/api\/ \{/);
+});
+
+test("emits HTTP-only (no SSL lines) so Certbot can add TLS afterwards", () => {
+  const cfg = renderProjectNginx({
+    project: "acadlynk",
+    uploadsPath,
+    blocks: [{ service: "web", domain: "acadlynk.com", port: 8096 }],
+  });
+  assert.ok(!/ssl_certificate/.test(cfg));
+  assert.ok(!/listen 443/.test(cfg));
+  assert.match(cfg, /listen 80;/); // redirect/serve stub present
+});
+
+test("admin without backendPort is rejected", () => {
+  assert.throws(
+    () =>
+      renderProjectNginx({
+        project: "p",
+        uploadsPath,
+        blocks: [{ service: "admin", domain: "a.com", port: 8094 }],
+      }),
+    /backendPort/,
+  );
 });
 
 test("deterministic for identical inputs", () => {
-  const a = renderSiteConfig({ domain: "x.com", port: 8100, upstreamName: "u" });
-  const b = renderSiteConfig({ domain: "x.com", port: 8100, upstreamName: "u" });
-  assert.equal(a, b);
-});
-
-test("rejects bad inputs", () => {
-  assert.throws(() => renderSiteConfig({ domain: "", port: 80, upstreamName: "u" }), /domain is required/);
-  assert.throws(() => renderSiteConfig({ domain: "x", port: 1.5, upstreamName: "u" }), /port must be an integer/);
+  const args = { project: "p", uploadsPath, blocks: [{ service: "web", domain: "x.com", port: 8096 }] };
+  assert.equal(renderProjectNginx(args), renderProjectNginx(args));
 });
