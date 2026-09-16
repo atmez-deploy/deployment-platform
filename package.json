@@ -7,9 +7,9 @@
   "scripts": {
     "validate": "node tools/validate.mjs",
     "test:schema": "node tools/negative-check.mjs",
-    "test:unit": "node --test \"engine/**/*.test.mjs\"",
-    "test": "node --test \"engine/**/*.test.mjs\"",
-    "check": "node tools/validate.mjs && node tools/negative-check.mjs && node --test \"engine/**/*.test.mjs\""
+    "test:unit": "node tools/run-tests.mjs",
+    "test": "node tools/run-tests.mjs",
+    "check": "node tools/validate.mjs && node tools/negative-check.mjs && node tools/run-tests.mjs"
   },
   "devDependencies": {
     "ajv": "^8.17.1",
