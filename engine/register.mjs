@@ -4,7 +4,7 @@
 // project+environment was granted (ports/domains). Returns a NEW registry object;
 // the caller persists it.
 
-import { resolveTarget } from "./registry.mjs";
+import { resolveTarget, allocateBlock, portsForBlock } from "./registry.mjs";
 import { allocatePort, allocateDomain, checkCollisions } from "./allocator.mjs";
 import { AllocatorError } from "./errors.mjs";
 
@@ -111,8 +111,27 @@ export function registerProject({ registry, projectConfig, environment }) {
     for (const { service, domain } of domains) {
       record.allocations.domains.push({ service, domain: allocateDomainExternal(target, domain) });
     }
+  } else if (target.port_block) {
+    // BLOCK model: assign this project+env a contiguous block; blue/green ports for every
+    // container service are derived from the block so projects never collide (Rule 2/9).
+    // Undo the early push so allocateBlock doesn't count this record's (absent) base.
+    target.projects.pop();
+    const base = allocateBlock(target);
+    record.block_base = base;
+    target.projects.push(record);
+
+    // Every service that runs a container needs a port pair. Use the declared service
+    // order for stable index assignment.
+    const serviceNames = Object.keys(envConfig.services ?? {});
+    const portMap = portsForBlock(base, target.port_block.size ?? 50, serviceNames);
+    for (const name of serviceNames) {
+      record.allocations.ports.push({ service: name, port: portMap[name].blue, port_green: portMap[name].green });
+    }
+    for (const { service, domain } of domains) {
+      record.allocations.domains.push({ service, domain: allocateDomain(target, domain) });
+    }
   } else {
-    // vps: fixed ports must be pre-validated as a batch (fail fast, no partial writes).
+    // LEGACY pool model: fixed ports pre-validated as a batch (fail fast, no partial writes).
     checkCollisions(target, {
       ports: desiredPorts(envConfig)
         .filter((p) => typeof p.fixed === "number")

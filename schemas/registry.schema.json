@@ -37,7 +37,7 @@
     "vpsResource": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "connection", "port_pools"],
+      "required": ["id", "kind", "connection"],
       "properties": {
         "id": {
           "$ref": "#/$defs/identitySlug",
@@ -79,10 +79,21 @@
         },
         "port_pools": {
           "type": "object",
-          "description": "Named port ranges the allocator draws from, keyed by service class.",
+          "description": "Named port ranges the allocator draws from, keyed by service class (legacy single-port model).",
           "minProperties": 1,
           "propertyNames": { "$ref": "#/$defs/identitySlug" },
           "additionalProperties": { "$ref": "#/$defs/portPool" }
+        },
+        "port_block": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Per-project block allocation: each project+env gets a contiguous block of `size` ports within [start,end]; blue/green split within the block.",
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "$ref": "#/$defs/port" },
+            "end": { "$ref": "#/$defs/port" },
+            "size": { "type": "integer", "minimum": 2, "default": 50 }
+          }
         },
         "projects": {
           "type": "array",
@@ -90,7 +101,11 @@
           "items": { "$ref": "#/$defs/hostedProject" },
           "default": []
         }
-      }
+      },
+      "anyOf": [
+        { "required": ["port_pools"] },
+        { "required": ["port_block"] }
+      ]
     },
 
     "portPool": {
@@ -110,6 +125,10 @@
       "properties": {
         "project": { "$ref": "#/$defs/identitySlug" },
         "environment": { "$ref": "#/$defs/identitySlug" },
+        "block_base": {
+          "$ref": "#/$defs/port",
+          "description": "Base host port of this project's allocated block (block model)."
+        },
         "allocations": {
           "type": "object",
           "additionalProperties": false,
@@ -119,13 +138,20 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["service", "port", "pool"],
+                "required": ["service", "port"],
                 "properties": {
                   "service": { "$ref": "#/$defs/identitySlug" },
-                  "port": { "$ref": "#/$defs/port" },
+                  "port": {
+                    "$ref": "#/$defs/port",
+                    "description": "Blue (primary) host port for this service."
+                  },
+                  "port_green": {
+                    "$ref": "#/$defs/port",
+                    "description": "Green host port (block model). Blue is `port`."
+                  },
                   "pool": {
                     "$ref": "#/$defs/identitySlug",
-                    "description": "Name of the port_pool this port was drawn from."
+                    "description": "Name of the port_pool this port was drawn from (legacy pool model)."
                   }
                 }
               },

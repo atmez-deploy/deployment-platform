@@ -139,3 +139,58 @@ test("unknown environment / missing target ref are rejected", () => {
     RegistrationError,
   );
 });
+
+// --- block-model registration ---
+function blockRegistry() {
+  return {
+    schema_version: "1.0",
+    resources: [
+      {
+        id: "vps-02",
+        kind: "vps",
+        connection: { host: "h", username: "u", ssh_key_ref: "k" },
+        port_block: { start: 5000, end: 8000, size: 50 },
+        projects: [],
+      },
+    ],
+  };
+}
+
+function multiServiceDocker(name = "acadlynk") {
+  return {
+    project: { name },
+    repository: { organization: "o", repository: name },
+    environments: {
+      production: {
+        deployment: { type: "docker", strategy: "blue_green" },
+        target: { driver: "vps", ref: "vps-02" },
+        services: {
+          backend: { exposure: { type: "domain", domain: `api.${name}.com` } },
+          web: { exposure: { type: "domain", domain: `${name}.com` } },
+        },
+      },
+    },
+  };
+}
+
+test("block registration assigns a base and per-service blue/green ports", () => {
+  const { registry: next, allocation } = registerProject({
+    registry: blockRegistry(),
+    projectConfig: multiServiceDocker(),
+    environment: "production",
+  });
+  assert.equal(allocation.block_base, 5000);
+  const ports = Object.fromEntries(allocation.allocations.ports.map((p) => [p.service, p]));
+  assert.deepEqual({ blue: ports.backend.port, green: ports.backend.port_green }, { blue: 5000, green: 5025 });
+  assert.deepEqual({ blue: ports.web.port, green: ports.web.port_green }, { blue: 5001, green: 5026 });
+  const vps = next.resources[0];
+  assert.equal(vps.projects.length, 1);
+});
+
+test("second block-model project gets the next block (no overlap)", () => {
+  let reg = blockRegistry();
+  ({ registry: reg } = registerProject({ registry: reg, projectConfig: multiServiceDocker("proj-a"), environment: "production" }));
+  const { allocation } = registerProject({ registry: reg, projectConfig: multiServiceDocker("proj-b"), environment: "production" });
+  assert.equal(allocation.block_base, 5050);
+  assert.equal(allocation.allocations.ports[0].port, 5050);
+});

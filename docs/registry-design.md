@@ -99,3 +99,44 @@ resolve for auditing, but no ports/capacity are tracked (Rule 13 — encode real
 schemas/registry.schema.json   # the schema (source of truth)
 config/registry.example.yaml   # example instance (vps-01 + external entries)
 ```
+
+---
+
+## Port-block allocation (per-project, collision-free)
+
+A VPS can use the **block model** instead of named pools. Config:
+
+```yaml
+port_block:
+  start: 5000
+  end: 8000
+  size: 50   # ports per project
+```
+
+Each project+environment is assigned a contiguous block of `size` ports, recorded as
+`block_base` on its registry entry. Within a block:
+
+```
+blue  service_i  = block_base + i
+green service_i  = block_base + size/2 + i
+```
+
+Guarantees:
+- **Projects never collide**: blocks don't overlap (allocator picks the lowest free base).
+- **Blue/green never collide**: they live in the lower/upper halves of the same block.
+- Around 25 services max per color per project (size/2), which is ample.
+
+The allocator (`allocateBlock`) scans assigned bases and returns the lowest free one; the
+resource manager should still verify against actually-listening ports on the server before
+first use. The legacy `port_pools` model remains supported for single-port services.
+
+---
+
+## Roadmap: provider drivers for automated onboarding
+
+Hostinger **shared** hosting has no API to create FTP accounts / subdomains, so those steps
+stay manual there. For fully-automated provisioning of shared hosting, a **cPanel/WHM
+driver** is the path: cPanel's UAPI/WHM API can create FTP accounts, subdomains, and
+databases programmatically. A future `cpanel` target driver would let cPanel-based hosts
+get the same one-click onboarding that Hostinger shared cannot. VPS targets already support
+full automation (users, dirs, ports, nginx, Certbot).

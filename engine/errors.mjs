@@ -58,3 +58,13 @@ export class TargetKindError extends AllocatorError {
     this.op = op;
   }
 }
+
+export class BlockExhaustedError extends AllocatorError {
+  constructor(vpsId, start, end, size) {
+    super(`No free ${size}-port block on ${vpsId} within ${start}-${end}`, "BLOCK_EXHAUSTED");
+    this.vpsId = vpsId;
+    this.start = start;
+    this.end = end;
+    this.size = size;
+  }
+}

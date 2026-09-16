@@ -181,7 +181,8 @@ function main() {
 
       const rec = (vps.projects ?? []).find((p) => p.project === project && p.environment === opts.env);
       if (!rec) fail(`${project}/${opts.env} not registered on ${t.ref}`);
-      const portOf = (svcName) => (rec.allocations?.ports ?? []).find((p) => p.service === svcName)?.port;
+      const portEntryOf = (svcName) => (rec.allocations?.ports ?? []).find((p) => p.service === svcName);
+      const portOf = (svcName) => portEntryOf(svcName)?.port;
       const domainOf = (svcName) => (rec.allocations?.domains ?? []).find((d) => d.service === svcName)?.domain;
 
       const svcNames = Object.keys(envConfig.services ?? {});
@@ -189,8 +190,11 @@ function main() {
 
       const services = svcNames.map((name) => {
         const svc = envConfig.services[name];
-        const blue = portOf(name);
+        const pe = portEntryOf(name);
+        const blue = pe?.port;
         if (!Number.isInteger(blue)) fail(`no port allocated for service '${name}' in the registry`);
+        // Block model records port_green explicitly; legacy model falls back to +offset.
+        const green = Number.isInteger(pe?.port_green) ? pe.port_green : blue + colorOffset;
         const image = images[name] ?? (svcNames.length === 1 ? images.__single : undefined);
         if (opts.command === "deploy-service" && !image) fail(`no --image provided for service '${name}'`);
         return {
@@ -199,7 +203,7 @@ function main() {
           image,
           containerPort: svc.container_port ?? (name === "backend" ? 3000 : 80),
           hostPortBlue: blue,
-          hostPortGreen: blue + colorOffset,
+          hostPortGreen: green,
           domain: domainOf(name) ?? svc.exposure?.domain,
           ssl: svc.exposure?.ssl === true,
           envFromSecret: svc.env_secret, // env var name holding the .env contents

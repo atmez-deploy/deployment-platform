@@ -52,3 +52,64 @@ export function findPool(vps, poolName) {
   if (!pool) throw new UnknownPoolError(vps.id, poolName);
   return pool;
 }
+
+import { BlockExhaustedError } from "./errors.mjs";
+
+// --- Port-block allocation --------------------------------------------------
+// A VPS carries a `port_block` config: { start, end, size } (size default 50).
+// Each project+environment is assigned a contiguous block of `size` ports. Within
+// a block, blue services use base + index, green services use base + size/2 + index.
+// This guarantees: (a) projects never overlap each other's ports, and (b) blue/green
+// of the same project never conflict. See docs.
+
+const DEFAULT_BLOCK_SIZE = 50;
+
+export function blockConfig(vps) {
+  const b = vps.port_block ?? {};
+  return {
+    start: b.start ?? 5000,
+    end: b.end ?? 9000,
+    size: b.size ?? DEFAULT_BLOCK_SIZE,
+  };
+}
+
+/** The set of block base ports already assigned to projects on this VPS. */
+export function usedBlockBases(vps) {
+  const bases = new Set();
+  for (const p of vps.projects ?? []) {
+    if (Number.isInteger(p.block_base)) bases.add(p.block_base);
+  }
+  return bases;
+}
+
+/**
+ * Find the lowest free block base on a VPS: a multiple-of-size offset from start whose
+ * range [base, base+size) does not overlap any already-assigned block.
+ * @throws {BlockExhaustedError}
+ */
+export function allocateBlock(vps) {
+  assertVps(vps, "allocateBlock");
+  const { start, end, size } = blockConfig(vps);
+  const used = usedBlockBases(vps);
+  for (let base = start; base + size - 1 <= end; base += size) {
+    if (!used.has(base)) return base;
+  }
+  throw new BlockExhaustedError(vps.id, start, end, size);
+}
+
+/**
+ * Given a block base + size and an ordered list of service names, compute per-service
+ * blue/green host ports. Deterministic and collision-free within the block.
+ * @returns {Record<string,{blue:number,green:number}>}
+ */
+export function portsForBlock(base, size, serviceNames) {
+  const half = Math.floor(size / 2);
+  if (serviceNames.length > half) {
+    throw new Error(`too many services (${serviceNames.length}) for half-block of ${half}`);
+  }
+  const out = {};
+  serviceNames.forEach((name, i) => {
+    out[name] = { blue: base + i, green: base + half + i };
+  });
+  return out;
+}
