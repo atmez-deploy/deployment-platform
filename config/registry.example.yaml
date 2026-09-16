@@ -78,6 +78,24 @@ resources:
             - { service: web, domain: acadlynk.com }
             - { service: admin, domain: admin.acadlynk.com }
 
+  # --- School VPS (real live-test target). Block range 9000+ deliberately avoids the
+  #     acadlynk ports already in use on this box (5000-5099, 8091-8096). Set host to the
+  #     real IP before testing; the SSH key comes from the DEPLOY_SSH_KEY secret. ---
+  - id: school
+    kind: vps
+    provider: existing
+    connection:
+      host: REPLACE_WITH_SCHOOL_VPS_IP
+      port: 22
+      username: REPLACE_WITH_DEPLOY_USER
+      ssh_key_ref: school_ssh_key
+    base_path: /opt
+    port_block:
+      start: 9000
+      end: 9500
+      size: 50
+    projects: []
+
   # --- External managed host: no ports/capacity tracked (Rule 13) ---
   - id: hostinger-main
     kind: external
