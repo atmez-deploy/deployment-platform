@@ -30,24 +30,32 @@ Because the engine never assumes it runs inside GitHub Actions, Option B can be 
 later as a new caller without rewriting the engine. See `docs/master-plan.md` and
 `docs/architecture-rules.md`.
 
+## Documentation
+
+Start at **[docs/README.md](docs/README.md)** — the documentation index. Highlights:
+- [how-it-works.md](docs/how-it-works.md) — architecture + end-to-end deploy flow
+- [usage-guide.md](docs/usage-guide.md) — step-by-step for each scenario
+- [platform-matrix.md](docs/platform-matrix.md) — what deploys where
+- [language-independence.md](docs/language-independence.md) — any build tool / auto-detected output
+- [onboarding.md](docs/onboarding.md) — reusable workflows + at-scale onboarding
+
 ## Status
 
-- **Foundation & schemas** (Phase 1–2): done — project config schema, resource registry,
-  architecture rules, validation + negative tests in CI.
-- **Engine core**: done — resource/port allocator, project registration, plan/executor
-  model. All pure, deterministic, GitHub-agnostic, unit-tested (`npm test`).
-- **Static → Hostinger pipeline**: code-complete — driver (SSH releases + symlink swap,
-  FTPS fallback), CLI, `deploy-static` / `rollback-static` workflows. See
-  `docs/demo-runbook.md`. Real live deploy pending Hostinger SSH access.
-- **Backend/service → VPS (Docker blue/green)**: code-complete — driver (pull → idle
-  color → health check → atomic Nginx switch → verify → stop old), nginx config
-  generation, CLI `deploy-service` / `rollback-service`, workflows. See
-  `docs/demo-runbook-vps.md`. Real live deploy pending a test VPS.
-- **Not yet built**: least-privilege user provisioning, SSL/Certbot automation, cloud
-  drivers (ECS/K8s), onboarding workflow, Terraform/Ansible. See `docs/master-plan.md`.
-
-Both pipelines can be shown as **dry runs today** (they print the exact commands without
-touching a server); live demos need the respective target access.
+- **Foundation & engine**: done — schemas, resource registry with per-project port blocks,
+  allocator, registration, plan/executor model. Pure, deterministic, GitHub-agnostic.
+- **Static pipeline**: done — Hostinger (SSH atomic releases / FTPS), cPanel
+  (auto-provisions subdomain + FTP via UAPI), static-on-VPS. Language-independent build
+  with output-folder auto-detection.
+- **Backend/service → VPS (Docker blue/green)**: done — compose-based, faithful to the
+  proven `deploy-backend.sh` flow (pull → health → sed nginx port switch preserving SSL →
+  verify → down old), Certbot bootstrap on first deploy.
+- **Platform selection + onboarding**: done — `platforms`/`preflight`, unified deploy
+  workflow, reusable workflows, and an onboard-site generator.
+- **~96 unit tests pass.** Everything runs as a **dry run** today (prints exact commands,
+  no secrets). The one thing still unproven is a **live run against a real server** — see
+  [live-test-runbook.md](docs/live-test-runbook.md) for the safe way to do it.
+- **Not yet built**: least-privilege user hardening, cloud drivers (ECS/K8s), the Option B
+  dashboard, Terraform/Ansible. See [master-plan.md](docs/master-plan.md).
 
 ## Repository layout (created incrementally, not all at once)
 
