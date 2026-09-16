@@ -26,6 +26,7 @@ import * as staticHostinger from "./drivers/static-hostinger.mjs";
 import * as dockerVps from "./drivers/docker-vps.mjs";
 import { runPlan, renderCommands, toCommands } from "./executor.mjs";
 import { resolveTarget } from "./registry.mjs";
+import { preflight, listPlatforms, PLATFORMS } from "./platforms.mjs";
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -130,7 +131,35 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <deploy|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|deploy|rollback|deploy-service|rollback-service> ...");
+
+  // These two don't need a config/env — handle before the deploy-only guards.
+  if (opts.command === "platforms") {
+    for (const p of listPlatforms()) {
+      console.log(`${p.id}\t${p.supportsFullDeploy ? "[full-deploy]" : "[manual prereqs]"}\t${PLATFORMS[p.id].label}`);
+    }
+    return;
+  }
+  if (opts.command === "preflight") {
+    if (!opts.platform) fail("--platform is required (see: cli.mjs platforms)");
+    const def = PLATFORMS[opts.platform];
+    if (!def) fail(`unknown platform '${opts.platform}'. Known: ${Object.keys(PLATFORMS).join(", ")}`);
+    // A field counts as "provided" if given as a --flag OR present in env (secrets).
+    const provided = {};
+    for (const inp of def.inputs) provided[inp.name] = opts[inp.name] != null || process.env[inp.name] != null;
+    const r = preflight(opts.platform, provided);
+    console.log(`# platform: ${opts.platform} (${r.driver} / ${r.command})`);
+    console.log(`# full auto-deploy: ${r.supportsFullDeploy ? "yes" : "no (manual prerequisites below)"}`);
+    console.log("# manual checklist:");
+    for (const c of r.checklist) console.log(`  - ${c}`);
+    if (!r.ok) {
+      console.error(`\nmissing required inputs: ${r.missing.join(", ")}`);
+      process.exit(1);
+    }
+    console.log("\npreflight OK — required inputs present.");
+    return;
+  }
+
   if (!opts.config) fail("--config is required");
   if (!opts.env) fail("--env is required");
 

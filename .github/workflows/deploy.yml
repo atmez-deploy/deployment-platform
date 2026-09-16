@@ -1,0 +1,112 @@
+name: Deploy (select platform)
+
+# Unified deploy entrypoint (Level 1). Pick a platform, the workflow:
+#   1) preflight — prints the manual checklist + validates the required inputs are present
+#   2) dry run   — prints the exact commands without touching anything
+#   3) deploy    — runs for real ONLY when 'confirm' is true
+# The correct driver is chosen from the selected platform.
+#
+# Secrets (set the ones your chosen platform needs):
+#   DEPLOY_SSH_KEY   vps + hostinger-ssh
+#   FTP_PASSWORD / FTP_HOST / FTP_USERNAME   hostinger-ftp
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Target platform
+        type: choice
+        options:
+          - vps
+          - hostinger-ssh
+          - hostinger-ftp
+        required: true
+      config:
+        description: Project config path
+        required: true
+        default: examples/example-app.project.yaml
+      environment:
+        description: Environment name
+        required: true
+        default: staging
+      registry:
+        description: Resource registry path (vps only)
+        required: false
+        default: config/registry.example.yaml
+      service:
+        description: Service name (vps; optional, deploys all if blank)
+        required: false
+      image:
+        description: Image ref, name=ref (vps only; repeat via comma)
+        required: false
+      sha:
+        description: Release id (hostinger static only)
+        required: false
+      dir:
+        description: Built site dir (hostinger static only)
+        required: false
+        default: dist
+      confirm:
+        description: Actually deploy (false = preflight + dry run only)
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+
+      - name: Preflight (checklist + validate inputs)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+        run: |
+          node engine/cli.mjs preflight \
+            --platform "${{ github.event.inputs.platform }}" \
+            --config "${{ github.event.inputs.config }}" \
+            --environment "${{ github.event.inputs.environment }}" \
+            ${{ github.event.inputs.registry && format('--registry {0}', github.event.inputs.registry) || '' }} \
+            ${{ github.event.inputs.image && format('--image {0}', github.event.inputs.image) || '' }}
+
+      - name: Deploy (dry run unless confirm=true)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+        run: |
+          PLATFORM="${{ github.event.inputs.platform }}"
+          EXECUTE=""
+          if [ "${{ github.event.inputs.confirm }}" = "true" ]; then EXECUTE="--execute"; fi
+
+          case "$PLATFORM" in
+            vps)
+              IMG_ARGS=""
+              if [ -n "${{ github.event.inputs.image }}" ]; then
+                IFS=',' read -ra IMGS <<< "${{ github.event.inputs.image }}"
+                for m in "${IMGS[@]}"; do IMG_ARGS="$IMG_ARGS --image $m"; done
+              fi
+              node engine/cli.mjs deploy-service \
+                --config "${{ github.event.inputs.config }}" \
+                --env "${{ github.event.inputs.environment }}" \
+                --registry "${{ github.event.inputs.registry }}" \
+                $IMG_ARGS $EXECUTE
+              ;;
+            hostinger-ssh|hostinger-ftp)
+              node engine/cli.mjs deploy \
+                --config "${{ github.event.inputs.config }}" \
+                --env "${{ github.event.inputs.environment }}" \
+                --sha "${{ github.event.inputs.sha || github.sha }}" \
+                --dir "${{ github.event.inputs.dir }}" \
+                $EXECUTE
+              ;;
+            *)
+              echo "unknown platform: $PLATFORM"; exit 1;;
+          esac

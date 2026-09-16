@@ -99,3 +99,33 @@ Rollback = the `rollback-service` flow (Nginx switch back).
 ### Reusable workflow
 The logic lives once in `.github/workflows/_deploy-service.reusable.yml`; the service repo
 caller (`examples/caller-deploy-service.yml`) is ~15 lines.
+
+---
+
+## Unified deploy: pick a platform (Level 1)
+
+The `Deploy (select platform)` workflow (`.github/workflows/deploy.yml`) is a single
+entrypoint where you choose the target platform and it does the rest:
+
+1. **Preflight** — prints that platform's manual checklist and validates the required
+   inputs/secrets are present (fails fast if not).
+2. **Dry run** — prints the exact commands (no changes) — this always runs.
+3. **Deploy** — runs for real only when `confirm: true`.
+
+Platforms (see `engine/platforms.mjs`):
+- `vps` — full auto-deploy (Docker blue/green). Needs `DEPLOY_SSH_KEY`, a registered
+  project (port block + domains), and image ref(s).
+- `hostinger-ssh` — static, SSH releases + symlink rollback. Manual: SSH enabled,
+  subdomain created. SSL managed by hPanel.
+- `hostinger-ftp` — static, FTPS mirror (no atomic rollback). Manual: FTP account +
+  subdomain. SSL managed by hPanel.
+
+CLI equivalents:
+```
+node engine/cli.mjs platforms                 # list selectable platforms
+node engine/cli.mjs preflight --platform vps --config ... --environment ...   # checklist + validate
+```
+
+Note on the UX ceiling: GitHub Actions inputs are a flat form (no conditional fields based
+on the platform choice). A dynamic per-platform form/wizard is an Option B (dashboard)
+feature; Level 1 delivers the pick-validate-dryrun-deploy flow within Actions' limits.
