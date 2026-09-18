@@ -45,6 +45,11 @@ const groups = [
     validate: compile("schemas/registry.schema.json"),
     files: yamlFilesIn("config", (f) => f.startsWith("registry")),
   },
+  {
+    name: "project registry (Model B)",
+    validate: compile("schemas/projects.schema.json"),
+    files: yamlFilesIn("config", (f) => f.startsWith("projects")),
+  },
 ];
 
 let total = 0;

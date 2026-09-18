@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atmez-deploy:deployment-platform:projects-schema:1.0",
+  "title": "Model B — Central Project Registry",
+  "description": "The list of client sites the platform deploys from its own repo (Model B). One entry per site: where to clone from, how to build, and where to publish. Contains NO secrets — only the NAMES of secrets (secret_ref, repo_token_ref); values are supplied at runtime via Actions secrets.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["projects"],
+  "properties": {
+    "schema_version": { "type": "string", "default": "1.0" },
+    "projects": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/project" }
+    }
+  },
+  "$defs": {
+    "envVarName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+      "description": "Name of a secret/env var (never a value)."
+    },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repo", "target"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Stable project id (lowercase kebab). Used at deploy time to select the entry."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Git URL to clone (https://…/repo.git or git@…:repo.git)."
+        },
+        "branch": {
+          "type": "string",
+          "default": "main",
+          "description": "Branch/ref to deploy."
+        },
+        "owner": { "type": "string", "description": "Team or person responsible." },
+        "repo_token_ref": {
+          "$ref": "#/$defs/envVarName",
+          "description": "Secret name holding a read token for a PRIVATE client repo. Omit for public repos."
+        },
+        "build": { "$ref": "#/$defs/build" },
+        "target": { "$ref": "#/$defs/target" },
+        "exposure": { "$ref": "#/$defs/exposure" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How to build the site. Language-independent. Omit `command` for a no-build site served as-is; omit `output_dir` to auto-detect.",
+      "properties": {
+        "command": { "type": "string" },
+        "output_dir": { "type": "string" },
+        "image": { "type": "string" },
+        "spa": { "type": "boolean", "default": false, "description": "Publish an .htaccess that routes deep links to index.html (React/Vue router)." },
+        "htaccess": { "type": "string", "description": "Literal .htaccess contents (overrides spa)." }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["driver", "webroot", "secret_ref"],
+      "description": "Where to publish. Mirrors the static target shape the engine consumes.",
+      "properties": {
+        "driver": { "enum": ["hostinger"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "username": { "type": "string" },
+        "auth": { "enum": ["ssh_key", "ftps"] },
+        "webroot": { "type": "string" },
+        "transfer": { "enum": ["rsync", "scp", "ftps"] },
+        "secret_ref": { "$ref": "#/$defs/envVarName" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "domain": { "type": "string", "format": "hostname" },
+        "ssl": {
+          "oneOf": [{ "type": "boolean" }, { "const": "managed_by_provider" }],
+          "default": "managed_by_provider"
+        }
+      }
+    }
+  }
+}

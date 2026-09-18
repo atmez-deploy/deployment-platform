@@ -2,6 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { planDeploy, planRollback } from "./drivers/static-hostinger.mjs";
 import { toCommands, renderCommands, runPlan } from "./executor.mjs";
 
@@ -63,4 +67,26 @@ test("ftps deploy compiles to an lftp mirror referencing $FTP_PASSWORD (never a 
   assert.match(script, /mirror -R --delete dist public_html/);
   // the password must be an env reference, not a value
   assert.ok(!/password123|secret/i.test(script));
+});
+
+test("spa deploy: write_local_file compiles to an in-process local write (marked)", () => {
+  const plan = planDeploy({ connection: conn, localDir: "dist", build: { spa: true } });
+  const cmds = toCommands(plan, conn, { keyPath: "/tmp/key" });
+  const w = cmds[0];
+  assert.equal(w.label, "write_local_file dist/.htaccess");
+  // carries a local-write marker so runPlan writes it in-process (no spawn)
+  assert.equal(w._localWrite.path, "dist/.htaccess");
+  assert.match(w._localWrite.content, /RewriteRule \^ index\.html \[L\]/);
+});
+
+test("write_local_file actually writes the file when executed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spa-"));
+  const plan = planDeploy({ connection: { ...conn, webroot: "public_html" }, localDir: dir, build: { htaccess: "HELLO\n" } });
+  // run only the local-write step by executing the plan with execute=true but a fake ssh?
+  // Simpler: pull the command and invoke the writer path via runPlan on a plan with just the write.
+  const writeOnly = { driver: "hostinger", mode: "ssh-mirror", steps: plan.steps.filter((s) => s.type === "write_local_file") };
+  const res = runPlan(writeOnly, conn, { keyPath: "/tmp/key", execute: true });
+  assert.equal(res.ok, true);
+  assert.equal(readFileSync(join(dir, ".htaccess"), "utf8"), "HELLO\n");
+  rmSync(dir, { recursive: true, force: true });
 });

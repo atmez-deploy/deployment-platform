@@ -26,6 +26,9 @@ projects:
     build:
       command: "npm ci && npm run build"
       output_dir: dist                  # omit to auto-detect
+      spa: true                         # React/Vue router: publish an .htaccess so deep links work
+      # htaccess: |                     # or provide custom .htaccess contents (overrides spa)
+      #   Redirect 301 /old /new
     target:
       driver: hostinger
       host: 145.223.17.98

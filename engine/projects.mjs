@@ -112,6 +112,8 @@ export function resolveProject(registry, id) {
           ...(build.command ? { command: build.command } : {}),
           ...(build.image ? { image: build.image } : {}),
           ...(build.output_dir ? { output_dir: build.output_dir } : {}),
+          ...(build.spa === true ? { spa: true } : {}),
+          ...(typeof build.htaccess === "string" ? { htaccess: build.htaccess } : {}),
         },
         services: {
           site: {

@@ -11,6 +11,7 @@
 // non-interactive ssh options.
 
 import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
 
 /** Shell-quote a single argument for POSIX remote commands. */
 function shq(s) {
@@ -124,6 +125,17 @@ function staticToCommands(plan, conn, opts = {}) {
 
   for (const step of plan.steps) {
     switch (step.type) {
+      case "write_local_file": {
+        // Local write on the runner (e.g. an .htaccess placed into the build dir before
+        // upload). Uses a marker so runPlan handles it in-process instead of spawning.
+        commands.push({
+          label: `write_local_file ${step.path}`,
+          bin: "node",
+          args: ["-e", `require('fs').writeFileSync(process.argv[1], process.argv[2])`, step.path, step.content],
+          _localWrite: { path: step.path, content: step.content },
+        });
+        break;
+      }
       case "ensure_dir": {
         const s = sshBase(conn, keyPath);
         commands.push({
@@ -375,6 +387,18 @@ export function runPlan(plan, conn, opts = {}) {
   }
   const results = [];
   for (const c of commands) {
+    // Local file writes happen in-process (no spawn) — robust for large contents and avoids
+    // shell/argv-length limits. Used for the SPA/.htaccess step.
+    if (c._localWrite) {
+      try {
+        writeFileSync(c._localWrite.path, c._localWrite.content);
+        results.push({ label: c.label, status: 0 });
+        continue;
+      } catch (e) {
+        results.push({ label: c.label, status: 1, error: e.message });
+        return { ok: false, results, failedAt: c.label };
+      }
+    }
     const r = spawnSync(c.bin, c.args, { stdio: "inherit", env: process.env });
     results.push({ label: c.label, status: r.status });
     if (r.status !== 0) {

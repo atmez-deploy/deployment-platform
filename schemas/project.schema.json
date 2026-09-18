@@ -249,7 +249,16 @@
         "command": { "type": "string", "description": "Build command (any language), e.g. 'npm ci && npm run build', 'hugo', 'bundle exec jekyll build'. Omit for no build." },
         "output_dir": { "type": "string", "description": "Optional. Directory to publish (e.g. 'dist','public','_site'). If omitted, auto-detected from what the build produced. Set it to be explicit / when detection is ambiguous." },
         "image": { "type": "string", "description": "Optional container image to run the build in (e.g. 'golang:1.22', 'ruby:3.3', 'klakegg/hugo'). Keeps the build toolchain independent of the runner." },
-        "node_version": { "type": "string", "description": "Optional Node version hint (only relevant for Node builds)." }
+        "node_version": { "type": "string", "description": "Optional Node version hint (only relevant for Node builds)." },
+        "spa": {
+          "type": "boolean",
+          "default": false,
+          "description": "Single-page app (React Router, Vue Router, etc.). When true, the platform writes an Apache .htaccess into the published folder that rewrites all non-file requests to index.html, so deep links (e.g. /about) work on shared hosting like Hostinger. Ignored if `htaccess` is provided."
+        },
+        "htaccess": {
+          "type": "string",
+          "description": "Optional literal .htaccess contents to publish alongside the site (overrides `spa`). Use for custom redirects/headers. Written verbatim into the published folder."
+        }
       }
     },
 

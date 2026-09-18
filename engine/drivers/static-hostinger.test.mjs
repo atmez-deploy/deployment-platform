@@ -70,3 +70,39 @@ test("missing localDir / webroot is rejected", () => {
 test("rollback on shared hosting = redeploy (no atomic switch)", () => {
   assert.throws(() => planRollback(), /redeploy the previous build/);
 });
+
+import { htaccessFor, SPA_HTACCESS } from "./static-hostinger.mjs";
+
+test("spa:true prepends a write_local_file .htaccess step into the build dir (ssh)", () => {
+  const plan = planDeploy({ connection: sshConn, localDir: "dist", build: { spa: true } });
+  const types = plan.steps.map((s) => s.type);
+  assert.deepEqual(types, ["write_local_file", "ensure_dir", "upload", "verify"]);
+  const w = plan.steps[0];
+  assert.equal(w.path, "dist/.htaccess");
+  assert.match(w.content, /RewriteRule \^ index\.html \[L\]/);
+});
+
+test("spa:true also works over ftps", () => {
+  const plan = planDeploy({ connection: ftpsConn, localDir: "dist", build: { spa: true } });
+  assert.deepEqual(plan.steps.map((s) => s.type), ["write_local_file", "upload"]);
+  assert.equal(plan.steps[0].path, "dist/.htaccess");
+});
+
+test("explicit htaccess string overrides spa and is written verbatim", () => {
+  const custom = "Redirect 301 /old /new\n";
+  const plan = planDeploy({ connection: sshConn, localDir: "dist", build: { spa: true, htaccess: custom } });
+  assert.equal(plan.steps[0].type, "write_local_file");
+  assert.equal(plan.steps[0].content, custom);
+});
+
+test("no spa / no htaccess => no extra step (unchanged behavior)", () => {
+  const plan = planDeploy({ connection: sshConn, localDir: "dist" });
+  assert.deepEqual(plan.steps.map((s) => s.type), ["ensure_dir", "upload", "verify"]);
+});
+
+test("htaccessFor precedence: explicit > spa > none", () => {
+  assert.equal(htaccessFor({ htaccess: "X", spa: true }), "X");
+  assert.equal(htaccessFor({ spa: true }), SPA_HTACCESS);
+  assert.equal(htaccessFor({}), null);
+  assert.equal(htaccessFor(undefined), null);
+});

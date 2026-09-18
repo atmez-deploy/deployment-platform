@@ -1,0 +1,33 @@
+# CLIENT-SIDE trigger (Model B, webhook path). The client drops THIS into their own repo
+# at .github/workflows/deploy.yml. On every push to their main branch it pings OUR platform
+# repo, which then clones + builds + deploys their site. The client adds NO deploy logic —
+# just this ~15-line notifier and one secret.
+#
+# One-time setup in the CLIENT repo:
+#   1. Create a fine-grained PAT (or use a GitHub App) that can send repository_dispatch to
+#      atmez-deploy/deployment-platform  (permission: "Contents: read" is not enough —
+#      dispatch needs a token with access to the target repo; simplest is a PAT the platform
+#      owner issues). Store it as the repo secret ATMEZ_DISPATCH_TOKEN.
+#   2. Set the project id below to the id we assigned in config/projects.yaml.
+#
+# If they DON'T want to set this up, that's fine — we just deploy them with the BUTTON in the
+# platform repo (Actions -> Deploy from registry). Webhook is the optional upgrade.
+
+name: Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify-platform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger atmez-deploy
+        env:
+          TOKEN: ${{ secrets.ATMEZ_DISPATCH_TOKEN }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/atmez-deploy/deployment-platform/dispatches \
+            -d '{"event_type":"deploy-project","client_payload":{"id":"REPLACE_WITH_PROJECT_ID"}}'

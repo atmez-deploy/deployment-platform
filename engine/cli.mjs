@@ -243,7 +243,7 @@ function main() {
       if (!opts.sha) fail("--sha is required");
       if (!opts.dir) fail("--dir is required");
       const connection = hostingerConnection(envConfig);
-      run(opts.command, staticHostinger.planDeploy({ connection, sha: opts.sha, localDir: opts.dir }), connection);
+      run(opts.command, staticHostinger.planDeploy({ connection, sha: opts.sha, localDir: opts.dir, build: envConfig.build }), connection);
       break;
     }
     case "rollback": {

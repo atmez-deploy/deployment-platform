@@ -1,0 +1,61 @@
+# CENTRAL PROJECT REGISTRY (Model B — deploy from OUR repo). THIS is the live file the
+# "Deploy from registry" workflow reads. Add one entry per client site.
+#
+# The client adds NOTHING to their repo. They give us a link; we record it here, then we
+# clone -> build -> publish from this repo. Trigger by BUTTON (Actions -> Deploy from
+# registry -> project id) or WEBHOOK (repository_dispatch type=deploy-project, id=<id>).
+#
+# Secrets are NEVER here:
+#   - the deploy credential is named by target.secret_ref (value in this repo's Actions secrets)
+#   - a private client repo's read token is named by repo_token_ref (also a repo secret)
+#
+# Validate against ../schemas/projects.schema.json
+
+schema_version: "1.0"
+
+projects:
+
+  # --- REAL, WORKING ENTRY ---
+  # Reuses the throwaway Hostinger test site we already proved. This deploys the ready-made
+  # page in examples/live-test-site/ by pointing at THIS repo as the "client" repo, so you
+  # can run Model B end-to-end today. Swap this out for a real client when onboarding.
+  - id: live-test
+    repo: https://github.com/atmez-deploy/deployment-platform.git
+    branch: main
+    build:
+      # No build tool needed — publish the ready-made folder as-is.
+      output_dir: examples/live-test-site
+    target:
+      driver: hostinger
+      host: 145.223.17.98
+      port: 65002
+      username: u443001285
+      auth: ssh_key
+      webroot: domains/mediumslateblue-mantis-944780.hostingersite.com/public_html
+      transfer: rsync
+      secret_ref: DEPLOY_SSH_KEY
+    exposure:
+      domain: mediumslateblue-mantis-944780.hostingersite.com
+      ssl: managed_by_provider
+
+  # --- TEMPLATE: a React/Vite SPA on Hostinger over SSH (copy + edit per client) ---
+  # - id: acme-marketing
+  #   repo: https://github.com/acme/marketing-site.git
+  #   branch: main
+  #   # repo_token_ref: ACME_REPO_TOKEN   # only if the repo is PRIVATE
+  #   build:
+  #     command: "npm ci && npm run build"
+  #     output_dir: dist                  # omit to auto-detect
+  #     spa: true                         # publish an .htaccess so deep links work
+  #   target:
+  #     driver: hostinger
+  #     host: 145.223.17.98
+  #     port: 65002
+  #     username: u443001285
+  #     auth: ssh_key
+  #     webroot: domains/acme.com/public_html
+  #     transfer: rsync
+  #     secret_ref: DEPLOY_SSH_KEY
+  #   exposure:
+  #     domain: acme.com
+  #     ssl: managed_by_provider
