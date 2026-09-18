@@ -11,7 +11,19 @@
 //
 // Usage:
 //   GH_TOKEN=... node tools/onboard.mjs \
-//     --repo owner/name --domain www.example.com --auth ftps [--platform-ref main] [--no-deploy]
+//     --repo owner/name --domain www.example.com --auth ssh_key \
+//     [--webroot domains/www.example.com/public_html] \
+//     [--build "npm ci && npm run build"] [--output-dir dist] [--spa] \
+//     [--platform-ref main] [--via-pr] [--no-deploy]
+//
+// Models:
+//   default  -> pushes the two files straight to the repo's default branch, then triggers
+//               the first deploy. Their repo's CI/CD runs on every push afterwards.
+//   --via-pr -> opens a PR with the two files instead (needs only PR write, not push-to-main).
+//               The client merges; the first deploy runs automatically on that merge.
+//
+// Flags:
+//   --build ""   -> no build (publish files as-is); --spa -> write an .htaccess for router apps.
 //
 // Secret values (read from env, only those present are set):
 //   FTP_PASSWORD, FTP_HOST, FTP_USERNAME, FTP_WEBROOT, DEPLOY_SSH_KEY
@@ -25,7 +37,9 @@ const sodium = require("libsodium-wrappers");
 const API = "https://api.github.com";
 
 function parseArgs(argv) {
-  const o = { deploy: true, platformRef: "main", auth: "ftps", kind: "static" };
+  // SSH is the primary, proven path (rsync over ssh_key). FTP is only a fallback for the
+  // cheapest Hostinger tiers (Single / WP-Single) that don't offer SSH — pass --auth ftps.
+  const o = { deploy: true, platformRef: "main", auth: "ssh_key", kind: "static" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--no-deploy") o.deploy = false;
@@ -37,6 +51,11 @@ function parseArgs(argv) {
     else if (a === "--service") o.service = argv[++i];
     else if (a === "--platform-ref") o.platformRef = argv[++i];
     else if (a === "--environment") o.environment = argv[++i];
+    else if (a === "--webroot") o.webroot = argv[++i];
+    else if (a === "--build") o.build = argv[++i];         // build command; "" for no build
+    else if (a === "--output-dir") o.outputDir = argv[++i];
+    else if (a === "--spa") o.spa = true;                  // publish an .htaccess for router apps
+    else if (a === "--via-pr") o.viaPr = true;             // open a PR instead of pushing to main
   }
   o.environment = o.environment || (o.kind === "service" ? "staging" : "production");
   o.service = o.service || "backend";
@@ -84,6 +103,50 @@ async function putFile(owner, repo, path, content, message) {
   console.log(`  wrote ${path}`);
 }
 
+/**
+ * Open a PR that adds the given files, instead of pushing to the default branch.
+ * Needs only contents-write + pull-request-write on the repo. Steps:
+ *   1) read the default branch + its head sha
+ *   2) create a setup branch from that sha
+ *   3) PUT each file onto the branch
+ *   4) open a PR from the branch into the default branch
+ */
+async function openSetupPr(owner, repo, files, title) {
+  const repoInfo = await gh(`/repos/${owner}/${repo}`);
+  if (!repoInfo) throw new Error(`repo ${owner}/${repo} not found or no access`);
+  const base = repoInfo.default_branch;
+  const ref = await gh(`/repos/${owner}/${repo}/git/ref/${encodeURIComponent(`heads/${base}`)}`);
+  const headSha = ref.object.sha;
+  const branch = `atmez-deploy/setup`;
+  // create the branch (ignore "already exists")
+  await gh(`/repos/${owner}/${repo}/git/refs`, {
+    method: "POST",
+    body: { ref: `refs/heads/${branch}`, sha: headSha },
+  }).catch(() => {});
+  for (const f of files) {
+    const existing = await gh(`/repos/${owner}/${repo}/contents/${encodeURIComponent(f.path)}?ref=${branch}`);
+    await gh(`/repos/${owner}/${repo}/contents/${encodeURIComponent(f.path)}`, {
+      method: "PUT",
+      body: { message: `ci: add ${f.path}`, content: b64(f.content), sha: existing?.sha, branch },
+    });
+    console.log(`  staged ${f.path} on ${branch}`);
+  }
+  const pr = await gh(`/repos/${owner}/${repo}/pulls`, {
+    method: "POST",
+    body: {
+      title,
+      head: branch,
+      base,
+      body:
+        "Automated setup by atmez-deploy.\n\n" +
+        "This adds a deploy config and a small workflow. After you merge, every push to " +
+        "`" + base + "` deploys automatically — no further setup needed.\n\n" +
+        "Make sure the deploy secret(s) are set in this repo's Actions secrets.",
+    },
+  });
+  return pr;
+}
+
 async function setSecret(owner, repo, name, value, keyCache) {
   if (value == null || value === "") return;
   const pk = keyCache.pk ?? (keyCache.pk = await gh(`/repos/${owner}/${repo}/actions/secrets/public-key`));
@@ -114,20 +177,31 @@ function callerWorkflow(config, environment, platformRef) {
   );
 }
 
-function siteConfig({ repoName, domain, auth, environment }) {
+function siteConfig({ repoName, domain, auth, environment, webroot, build, outputDir, spa }) {
+  // Default webroot: real Hostinger domains live under domains/<domain>/public_html; a
+  // primary domain may just be public_html. Caller can override with --webroot.
+  const root = webroot || `domains/${domain}/public_html`;
   const targetSsh =
     `    target:\n      driver: hostinger\n      host: \${FTP_HOST}\n      username: \${FTP_USERNAME}\n` +
-    `      auth: ssh_key\n      webroot: public_html\n      transfer: rsync\n`;
+    `      auth: ssh_key\n      webroot: ${root}\n      transfer: rsync\n`;
   const targetFtps =
     `    target:\n      driver: hostinger\n      host: PLACEHOLDER_or_FTP_HOST_secret\n      port: 21\n` +
-    `      username: PLACEHOLDER_or_FTP_USERNAME_secret\n      auth: ftps\n      webroot: public_html\n      transfer: ftps\n`;
+    `      username: PLACEHOLDER_or_FTP_USERNAME_secret\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n`;
+  // build.command: default to a Node build, but allow "" (no build) and a custom command.
+  const cmd = build === undefined ? "npm ci && npm run build" : build;
+  const out = outputDir || "dist";
+  const buildBlock =
+    `    build:\n` +
+    (cmd ? `      command: ${cmd}\n` : "") +
+    `      output_dir: ${out}\n` +
+    (spa ? `      spa: true\n` : "");
   return (
     `schema_version: "1.0"\n` +
     `project:\n  name: ${repoName}\n` +
     `repository:\n  organization: atmez-deploy\n  repository: ${repoName}\n` +
     `environments:\n  ${environment}:\n    deployment:\n      type: static\n` +
     (auth === "ssh_key" ? targetSsh : targetFtps) +
-    `    build:\n      command: npm ci && npm run build\n      output_dir: dist\n` +
+    buildBlock +
     `    services:\n      site:\n        exposure:\n          type: domain\n          domain: ${domain}\n          ssl: managed_by_provider\n`
   );
 }
@@ -164,15 +238,32 @@ function serviceConfig({ repoName, domain, service, environment, vpsRef }) {
 async function onboardStatic(owner, repo, o, keyCache) {
   const configPath = "deploy.project.yaml";
   console.log(`onboarding static ${o.repo} (${o.auth}) -> ${o.domain}`);
-  await putFile(owner, repo, configPath, siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment }), "chore: add atmez-deploy site config");
-  await putFile(owner, repo, ".github/workflows/deploy.yml", callerWorkflow(configPath, o.environment, o.platformRef), "ci: add atmez-deploy caller workflow");
+  const files = [
+    { path: configPath, content: siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa }) },
+    { path: ".github/workflows/deploy.yml", content: callerWorkflow(configPath, o.environment, o.platformRef) },
+  ];
+
+  if (o.viaPr) {
+    // Open a PR instead of pushing to the default branch (needs only PR write, not a
+    // direct push to main). The client reviews + merges; the workflow then lives in
+    // their repo and CI/CD runs natively on every future push.
+    const pr = await openSetupPr(owner, repo, files, "atmez-deploy: set up automated deployment");
+    console.log(`  opened PR: ${pr.html_url}`);
+    // secrets can be set now (they apply once the workflow merges + runs)
+  } else {
+    for (const f of files) await putFile(owner, repo, f.path, f.content, `ci: add atmez-deploy ${f.path}`);
+  }
+
   for (const name of ["FTP_PASSWORD", "FTP_HOST", "FTP_USERNAME", "FTP_WEBROOT", "DEPLOY_SSH_KEY"]) {
     await setSecret(owner, repo, name, process.env[name], keyCache);
   }
-  if (o.deploy) {
+
+  if (o.deploy && !o.viaPr) {
     await gh(`/repos/${owner}/${repo}/actions/workflows/deploy.yml/dispatches`, { method: "POST", body: { ref: "main" } })
       .catch((e) => console.warn(`  (first deploy dispatch skipped: ${e.message})`));
     console.log("  triggered first deploy");
+  } else if (o.viaPr) {
+    console.log("  first deploy will run automatically when the PR is merged (workflow triggers on push to main)");
   }
 }
 
@@ -189,13 +280,31 @@ async function onboardService(owner, repo, o, keyCache) {
   console.log("  NOTE: register this project+environment in the registry so a port+domain are allocated");
 }
 
+/** Print the files we WOULD add to the client repo, without any API calls. */
+function dryRunStatic(repo, o) {
+  const configPath = "deploy.project.yaml";
+  console.log(`# DRY RUN — files atmez-deploy would add to ${o.repo}\n`);
+  console.log(`===== ${configPath} =====`);
+  console.log(siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa }));
+  console.log(`===== .github/workflows/deploy.yml =====`);
+  console.log(callerWorkflow(configPath, o.environment, o.platformRef));
+}
+
 async function main() {
-  if (!token) die("GH_TOKEN env is required (GitHub App installation token or PAT)");
   const o = parseArgs(process.argv.slice(2));
+  const dryRun = process.argv.includes("--dry-run");
+  if (!dryRun && !token) die("GH_TOKEN env is required (GitHub App installation token or PAT)");
   if (!o.repo || !o.repo.includes("/")) die("--repo owner/name is required");
   if (!o.domain) die("--domain is required");
   if (!["static", "service"].includes(o.kind)) die("--kind must be 'static' or 'service'");
   const [owner, repo] = o.repo.split("/");
+
+  if (dryRun) {
+    if (o.kind === "service") die("--dry-run currently supports --kind static");
+    dryRunStatic(repo, o);
+    console.log("done (dry run — nothing was changed).");
+    return;
+  }
 
   await sodium.ready;
   const keyCache = {};

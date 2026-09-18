@@ -4,8 +4,8 @@ name: Reusable — deploy static site
 # with a tiny caller workflow (see examples/caller-deploy-static.yml). The deploy
 # logic lives HERE, once — update it and every site benefits.
 #
-# Supports both Hostinger modes:
-#   auth: ssh_key -> rsync releases + atomic symlink swap
+# Supports both Hostinger modes (shared hosting serves the webroot directly, so both mirror):
+#   auth: ssh_key -> rsync --delete mirror into webroot
 #   auth: ftps    -> lftp mirror into webroot
 #
 # The engine is pulled from this platform repo at a pinned ref so callers don't
