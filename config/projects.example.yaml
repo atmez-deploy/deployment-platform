@@ -1,0 +1,60 @@
+# CENTRAL PROJECT REGISTRY (Model B — deploy from OUR repo).
+#
+# This is the "paste a repo link, we deploy it" list. Each entry is one client site we
+# host. Nothing is added to the client's repo — we clone it, build it, and publish it
+# from here. The deploy engine is repo-agnostic: it just needs "a built folder + a target".
+#
+# Triggers (both supported):
+#   - button  : Actions -> "Deploy from registry" -> pick project -> Run
+#   - webhook : the client's push pings us (repository_dispatch), we deploy that project
+#
+# Secrets are NEVER in this file. Each project names the secret that holds its deploy key
+# (secret_ref); the value lives in this repo's Actions secrets. Private client repos use a
+# read token named by repo_token_ref (a repo secret), used only to clone.
+#
+# Validate against ../schemas/projects.schema.json
+
+schema_version: "1.0"
+
+projects:
+
+  # --- A React/Vite static site on Hostinger over SSH ---
+  - id: acme-marketing
+    repo: https://github.com/acme/marketing-site.git
+    branch: main
+    # repo_token_ref: ACME_REPO_TOKEN   # only needed if the repo is PRIVATE
+    build:
+      command: "npm ci && npm run build"
+      output_dir: dist                  # omit to auto-detect
+    target:
+      driver: hostinger
+      host: 145.223.17.98
+      port: 65002
+      username: u443001285
+      auth: ssh_key
+      webroot: domains/acme.com/public_html
+      transfer: rsync
+      secret_ref: DEPLOY_SSH_KEY
+    exposure:
+      domain: acme.com
+      ssl: managed_by_provider
+
+  # --- A plain HTML site (no build) on Hostinger over FTPS ---
+  - id: bakery-landing
+    repo: https://github.com/example/bakery-landing.git
+    branch: main
+    build:
+      # no command -> nothing is built; the repo's ./public folder is published as-is
+      output_dir: public
+    target:
+      driver: hostinger
+      host: ftp.bakery.com
+      port: 21
+      username: u987654321
+      auth: ftps
+      webroot: public_html
+      transfer: ftps
+      secret_ref: BAKERY_FTP_PASSWORD
+    exposure:
+      domain: www.bakery.com
+      ssl: managed_by_provider

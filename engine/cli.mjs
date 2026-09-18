@@ -29,6 +29,7 @@ import { runPlan, renderCommands, toCommands } from "./executor.mjs";
 import { resolveTarget } from "./registry.mjs";
 import { registerProject } from "./register.mjs";
 import { preflight, listPlatforms, PLATFORMS } from "./platforms.mjs";
+import { resolveProject, listProjectIds } from "./projects.mjs";
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -133,7 +134,7 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|list-projects|resolve-project|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
 
   // These two don't need a config/env — handle before the deploy-only guards.
   if (opts.command === "platforms") {
@@ -159,6 +160,43 @@ function main() {
       process.exit(1);
     }
     console.log("\npreflight OK — required inputs present.");
+    return;
+  }
+
+  // ---- Model B: central project registry (deploy from OUR repo) ----
+  // list-projects: print the ids in the registry (used to build the button dropdown / validate).
+  if (opts.command === "list-projects") {
+    if (!opts.projects) fail("--projects <path> is required");
+    const registry = loadYaml(opts.projects);
+    for (const id of listProjectIds(registry)) console.log(id);
+    return;
+  }
+
+  // resolve-project: resolve one registry id into (a) clone info and (b) a generated deploy
+  // config the existing `deploy` command consumes. Writes the config to --out and prints
+  // machine-readable clone/build lines the workflow reads to clone + build the client repo.
+  if (opts.command === "resolve-project") {
+    if (!opts.projects) fail("--projects <path> is required");
+    if (!opts.id) fail("--id <project-id> is required");
+    const registry = loadYaml(opts.projects);
+    let resolved;
+    try {
+      resolved = resolveProject(registry, opts.id);
+    } catch (e) {
+      fail(e.message);
+    }
+    const outPath = opts.out || `.resolved-${resolved.id}.project.yaml`;
+    writeFileSync(outPath, dumpYaml(resolved.deployConfig, { lineWidth: 120 }));
+    // Machine-readable lines for the workflow (KEY=VALUE), never any secret VALUES.
+    console.log(`CONFIG=${outPath}`);
+    console.log(`ENV=${resolved.environment}`);
+    console.log(`REPO=${resolved.clone.repo}`);
+    console.log(`BRANCH=${resolved.clone.branch}`);
+    console.log(`TOKEN_REF=${resolved.clone.tokenRef ?? ""}`);
+    console.log(`SECRET_REF=${resolved.secretRef}`);
+    console.log(`BUILD_COMMAND=${resolved.build.command ?? ""}`);
+    console.log(`BUILD_IMAGE=${resolved.build.image ?? ""}`);
+    console.log(`OUTPUT_DIR=${resolved.build.outputDir ?? ""}`);
     return;
   }
 

@@ -1,0 +1,155 @@
+name: Deploy from registry
+
+# MODEL B — deploy a client site from OUR repo. The client adds NOTHING to their repo;
+# they just give us a link, recorded in config/projects.yaml. We clone, build, and publish.
+#
+# Triggers (both supported, per the "webhook if available, else button" rule):
+#   - BUTTON : Actions -> "Deploy from registry" -> enter the project id -> Run.
+#   - WEBHOOK: a repository_dispatch event of type "deploy-project" with
+#              client_payload.id = "<project-id>". A client's push (via a webhook / GitHub
+#              App forwarding to this repo) triggers the same deploy automatically.
+#
+# Secrets (this repo's Actions secrets):
+#   DEPLOY_SSH_KEY      / per-target deploy credential (name matches target.secret_ref)
+#   <REPO_TOKEN_REF>    only for PRIVATE client repos (name matches repo_token_ref)
+#
+# Safety: defaults to DRY RUN on the button. Set execute=true to publish for real.
+# Webhook runs execute for real (that's the point of auto-deploy).
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: Project id (see config/projects.yaml)
+        required: true
+      execute:
+        description: "Run for real? (false = dry run)"
+        type: boolean
+        default: false
+  repository_dispatch:
+    types: [deploy-project]
+
+concurrency:
+  # one deploy per project at a time
+  group: deploy-registry-${{ github.event.inputs.id || github.event.client_payload.id }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Check out THIS repo (the engine + the projects registry).
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install engine deps
+        run: npm install
+
+      # 2. Resolve the requested project id -> clone info + a generated deploy config.
+      #    id comes from the button input OR the webhook payload.
+      - name: Resolve project
+        id: resolve
+        run: |
+          ID="${{ github.event.inputs.id || github.event.client_payload.id }}"
+          if [ -z "$ID" ]; then echo "::error::no project id provided"; exit 1; fi
+          node engine/cli.mjs resolve-project \
+            --projects config/projects.yaml \
+            --id "$ID" \
+            --out .resolved.project.yaml > .resolved.env
+          cat .resolved.env
+          # export each KEY=VALUE line as a step output
+          while IFS='=' read -r k v; do
+            echo "$k=$v" >> "$GITHUB_OUTPUT"
+          done < .resolved.env
+
+      # 3. Clone the CLIENT repo into ./_client. For private repos the token comes from the
+      #    secret named by TOKEN_REF (never printed). Public repos clone with no token.
+      - name: Clone client repo
+        env:
+          # Expose ALL secrets so we can pick the one named by TOKEN_REF at run time.
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          REPO="${{ steps.resolve.outputs.REPO }}"
+          BRANCH="${{ steps.resolve.outputs.BRANCH }}"
+          TOKEN_REF="${{ steps.resolve.outputs.TOKEN_REF }}"
+          if [ -n "$TOKEN_REF" ]; then
+            TOKEN=$(node -e "const s=JSON.parse(process.env.ALL_SECRETS||'{}');process.stdout.write(s[process.argv[1]]||'')" "$TOKEN_REF")
+            if [ -z "$TOKEN" ]; then echo "::error::repo_token_ref '$TOKEN_REF' has no matching secret"; exit 1; fi
+            # inject token via extraheader so it never lands in .git/config on disk
+            AUTH=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+            git -c http.extraheader="Authorization: Basic $AUTH" clone --depth 1 --branch "$BRANCH" "$REPO" _client
+          else
+            git clone --depth 1 --branch "$BRANCH" "$REPO" _client
+          fi
+
+      # 4. Build the client site inside ./_client using its declared command (any language),
+      #    or an optional container image. Then resolve the output folder (explicit or
+      #    auto-detected) — reusing the same detector as the per-repo pipeline.
+      - name: Build client site
+        id: build
+        working-directory: _client
+        run: |
+          CMD="${{ steps.resolve.outputs.BUILD_COMMAND }}"
+          IMG="${{ steps.resolve.outputs.BUILD_IMAGE }}"
+          OUT="${{ steps.resolve.outputs.OUTPUT_DIR }}"
+
+          node ../tools/detect-output.mjs snapshot > ../.before-build.json
+
+          if [ -n "$CMD" ]; then
+            if [ -n "$IMG" ]; then
+              echo "Building in container: $IMG"
+              docker run --rm -v "$PWD:/src" -w /src "$IMG" sh -lc "$CMD"
+            else
+              echo "Building on runner: $CMD"
+              sh -lc "$CMD"
+            fi
+          else
+            echo "No build command — publishing files as-is."
+          fi
+
+          if [ -n "$OUT" ]; then
+            RESOLVED="$OUT"
+          else
+            RESOLVED=$(node ../tools/detect-output.mjs resolve --before ../.before-build.json) || {
+              echo "::error::could not auto-detect output folder for this project. Set build.output_dir in projects.yaml.";
+              exit 1;
+            }
+          fi
+          echo "resolved output: $RESOLVED"
+          echo "output_dir=$RESOLVED" >> "$GITHUB_OUTPUT"
+
+      # 5. Publish via the engine. The generated config lives at .resolved.project.yaml.
+      #    The deploy credential is the secret named by SECRET_REF, exposed as DEPLOY_SSH_KEY
+      #    / FTP_PASSWORD as appropriate. We forward the common names; the CLI reads them.
+      - name: Deploy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_WEBROOT: ${{ secrets.FTP_WEBROOT }}
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          SECRET_REF="${{ steps.resolve.outputs.SECRET_REF }}"
+          # If the project uses a non-default secret name for its SSH key, map it onto
+          # DEPLOY_SSH_KEY so the engine (which reads DEPLOY_SSH_KEY) picks it up.
+          if [ -n "$SECRET_REF" ] && [ "$SECRET_REF" != "DEPLOY_SSH_KEY" ]; then
+            VAL=$(node -e "const s=JSON.parse(process.env.ALL_SECRETS||'{}');process.stdout.write(s[process.argv[1]]||'')" "$SECRET_REF")
+            if [ -n "$VAL" ]; then export DEPLOY_SSH_KEY="$VAL"; export FTP_PASSWORD="$VAL"; fi
+          fi
+
+          # Webhook deploys run for real; button honors the execute toggle.
+          EXECUTE="--execute"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.execute }}" != "true" ]; then
+            EXECUTE=""
+          fi
+
+          node engine/cli.mjs deploy \
+            --config .resolved.project.yaml \
+            --env "${{ steps.resolve.outputs.ENV }}" \
+            --sha "${{ github.sha }}" \
+            --dir "_client/${{ steps.build.outputs.output_dir }}" \
+            $EXECUTE
