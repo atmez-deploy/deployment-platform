@@ -1,0 +1,56 @@
+name: Live test — Hostinger (throwaway)
+
+# One-off, safe live test: publish the ready-made page in examples/live-test-site/
+# to the TEMPORARY Hostinger domain over SSH/rsync using the platform engine.
+#
+# Why a dedicated workflow: no build guessing. It ships the exact folder we prepared,
+# so what you see locally is what lands in the webroot.
+#
+# Safety:
+#   - Defaults to DRY RUN. It only touches the server when you set execute=true.
+#   - Targets ONLY the throwaway domain's own public_html (see the config file).
+#   - rsync --delete makes the webroot match our folder exactly (removes Hostinger's
+#     default.php placeholder — expected and safe on this throwaway site).
+#
+# Required repository secret:
+#   DEPLOY_SSH_KEY   the PEM contents of the SSH private key registered in hPanel.
+#
+# Delete this workflow (and the example config/site) after the test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Run for real? (false = dry run, prints commands only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: live-test-hostinger
+  cancel-in-progress: false
+
+jobs:
+  live-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install engine deps
+        run: npm install
+
+      - name: Deploy (dry run unless execute=true)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          EXECUTE=""
+          if [ "${{ github.event.inputs.execute }}" = "true" ]; then EXECUTE="--execute"; fi
+          node engine/cli.mjs deploy \
+            --config examples/hostinger-live-test.project.yaml \
+            --env production \
+            --sha "${{ github.sha }}" \
+            --dir examples/live-test-site \
+            $EXECUTE
