@@ -14,26 +14,18 @@ const conn = {
   transfer: "rsync",
 };
 
-test("deploy plan compiles to ssh/rsync commands in order", () => {
+test("ssh deploy compiles to ensure_dir + rsync mirror + verify", () => {
   const plan = planDeploy({ connection: conn, sha: "abc123", localDir: "dist" });
   const cmds = toCommands(plan, conn, { keyPath: "/tmp/key" });
   const bins = cmds.map((c) => c.bin);
-  assert.deepEqual(bins, ["ssh", "rsync", "ssh", "ssh", "ssh"]);
+  assert.deepEqual(bins, ["ssh", "rsync", "ssh"]);
 
   const rsync = cmds.find((c) => c.bin === "rsync");
   assert.ok(rsync.args.includes("--delete"));
-  assert.ok(rsync.args.some((a) => a.endsWith("public_html/releases/abc123/")));
-  // ssh identity is passed via -e string to rsync
+  // mirrors straight into the webroot, NOT a releases/<sha> subdir
+  assert.ok(rsync.args.some((a) => a.endsWith("public_html/")));
+  assert.ok(!rsync.args.some((a) => a.includes("releases/")));
   assert.ok(rsync.args.some((a) => a.includes("-i /tmp/key")));
-});
-
-test("symlink swap is atomic (temp link then mv -T)", () => {
-  const plan = planDeploy({ connection: conn, sha: "abc123", localDir: "dist" });
-  const cmds = toCommands(plan, conn, { keyPath: "/tmp/key" });
-  const swap = cmds.find((c) => c.label.startsWith("symlink_swap"));
-  const remote = swap.args[swap.args.length - 1];
-  assert.match(remote, /ln -sfn/);
-  assert.match(remote, /mv -T/);
 });
 
 test("commands never contain the private key material (only the path)", () => {
@@ -44,19 +36,11 @@ test("commands never contain the private key material (only the path)", () => {
 });
 
 test("runPlan without execute returns a dry run (no network)", () => {
-  const plan = planRollback({ connection: conn, toSha: "old999" });
+  const plan = planDeploy({ connection: conn, sha: "abc123", localDir: "dist" });
   const res = runPlan(plan, conn, { keyPath: "/tmp/key" });
   assert.equal(res.dryRun, true);
   assert.equal(res.ok, true);
   assert.ok(Array.isArray(res.commands));
-});
-
-test("prune command keeps N newest release dirs", () => {
-  const plan = planDeploy({ connection: conn, sha: "abc123", localDir: "dist", keepReleases: 4 });
-  const cmds = toCommands(plan, conn, { keyPath: "/tmp/key" });
-  const prune = cmds.find((c) => c.label.startsWith("prune_releases"));
-  const remote = prune.args[prune.args.length - 1];
-  assert.match(remote, /tail -n \+5/); // keep 4 => delete from line 5 on
 });
 
 // --- FTPS path ---

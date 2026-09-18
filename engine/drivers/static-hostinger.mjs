@@ -5,15 +5,14 @@
 // executor (engine/executor) turns into real ssh/rsync/lftp commands. This keeps the
 // hard logic unit-testable and secret-free (Rules 11, 14).
 //
-// Release model over SSH (atomic, reversible — Rule 8):
-//   <webroot>/
-//     releases/<sha>/        <- fresh upload of the built site
-//     current -> releases/<sha>   (symlink the web server serves)
-// Deploy  = upload new release dir, then repoint `current`.
-// Rollback = repoint `current` back to a previous release dir.
-//
-// FTPS fallback (cheapest shared hosting, no shell): no symlinks possible, so we
-// mirror the build straight into <webroot>. Not atomic; rollback = re-upload prior build.
+// Shared-hosting reality: Hostinger serves files DIRECTLY from <webroot> (public_html),
+// not from a `current` symlink, and you can't change the document root on shared plans.
+// So both SSH and FTP here MIRROR the build straight into <webroot> — exactly what you do
+// by hand (paste the contents of dist/out into public_html). This is not atomic, so
+// rollback = redeploy the previous build. (The atomic releases+symlink model belongs to
+// our own VPS/nginx driver, where we control the document root.)
+//   SSH  -> rsync -az --delete <localDir>/  <webroot>/
+//   FTPS -> lftp mirror <localDir> <webroot>
 
 /**
  * @typedef {Object} HostingerConnection
@@ -49,54 +48,43 @@ function posixJoin(...parts) {
  * @param {number} [args.keepReleases] how many old releases to retain (default 5)
  * @returns {{driver:string, mode:string, steps: object[]}}
  */
-export function planDeploy({ connection, sha, localDir, keepReleases = 5 }) {
-  assertSha(sha);
+export function planDeploy({ connection, sha, localDir }) {
+  if (sha !== undefined) assertSha(sha); // sha is optional now (kept for interface compat)
   if (!localDir) throw new Error("localDir is required");
   if (!connection?.webroot) throw new Error("connection.webroot is required");
 
-  const useSsh = connection.auth === "ssh_key";
-  if (!useSsh) return planDeployFtps({ connection, localDir });
-
   const webroot = connection.webroot;
-  const releasesRoot = posixJoin(webroot, RELEASES_DIR);
-  const releaseDir = posixJoin(releasesRoot, sha);
-  const currentLink = posixJoin(webroot, CURRENT_LINK);
 
-  return {
-    driver: "hostinger",
-    mode: "ssh-release",
-    steps: [
-      { type: "ensure_dir", path: releasesRoot, note: "make sure releases/ exists" },
-      {
-        type: "upload",
-        method: connection.transfer ?? "rsync",
-        localDir,
-        remoteDir: releaseDir,
-        note: "upload built site into a fresh release dir",
-      },
-      {
-        type: "symlink_swap",
-        link: currentLink,
-        target: releaseDir,
-        note: "atomically repoint current -> new release",
-      },
-      {
-        type: "verify",
-        check: "path_exists",
-        path: posixJoin(currentLink, "index.html"),
-        note: "sanity check the live path resolves",
-      },
-      {
-        type: "prune_releases",
-        releasesRoot,
-        keep: keepReleases,
-        note: "remove oldest releases beyond the retention window",
-      },
-    ],
-  };
+  if (connection.auth === "ssh_key") {
+    // Mirror straight into the webroot over rsync/scp — what actually shows in the browser
+    // on shared hosting. --delete keeps the webroot exactly matching the build output.
+    return {
+      driver: "hostinger",
+      mode: "ssh-mirror",
+      steps: [
+        { type: "ensure_dir", path: webroot, note: "ensure webroot exists" },
+        {
+          type: "upload",
+          method: connection.transfer === "scp" ? "scp" : "rsync",
+          localDir,
+          remoteDir: webroot,
+          mirror: true,
+          note: "mirror built site directly into webroot (served as-is on shared hosting)",
+        },
+        {
+          type: "verify",
+          check: "path_exists",
+          path: posixJoin(webroot, "index.html"),
+          note: "sanity check index.html landed in the webroot",
+        },
+      ],
+    };
+  }
+
+  return planDeployFtps({ connection, localDir });
 }
 
-/** FTPS fallback: mirror the build directly into webroot (non-atomic). */
+/** FTPS: mirror the build directly into webroot (non-atomic). */
 function planDeployFtps({ connection, localDir }) {
   return {
     driver: "hostinger",
@@ -122,30 +110,12 @@ function planDeployFtps({ connection, localDir }) {
  * @param {string} args.toSha  the release id to roll back to
  * @returns {{driver:string, mode:string, steps: object[]}}
  */
-export function planRollback({ connection, toSha }) {
-  assertSha(toSha);
-  if (connection.auth !== "ssh_key") {
-    throw new Error("rollback via symlink requires ssh_key auth; on FTPS, redeploy the prior build");
-  }
-  const webroot = connection.webroot;
-  const releaseDir = posixJoin(webroot, RELEASES_DIR, toSha);
-  const currentLink = posixJoin(webroot, CURRENT_LINK);
-  return {
-    driver: "hostinger",
-    mode: "ssh-release",
-    steps: [
-      {
-        type: "verify",
-        check: "path_exists",
-        path: releaseDir,
-        note: "ensure the target release still exists before switching",
-      },
-      {
-        type: "symlink_swap",
-        link: currentLink,
-        target: releaseDir,
-        note: "repoint current -> previous release",
-      },
-    ],
-  };
+export function planRollback() {
+  // Shared Hostinger serves the webroot directly (no symlink to flip), so rollback is not
+  // an in-place switch — you redeploy the previous build. This is intentional and honest:
+  // atomic rollback lives in the VPS/nginx driver where we control the document root.
+  throw new Error(
+    "rollback on shared Hostinger = redeploy the previous build (no atomic switch on shared hosting). " +
+      "Re-run deploy with the prior build output.",
+  );
 }

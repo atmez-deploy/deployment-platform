@@ -21,19 +21,16 @@ const ftpsConn = {
   transfer: "ftps",
 };
 
-test("ssh deploy plan uploads to releases/<sha> then swaps current", () => {
+test("ssh deploy MIRRORS straight into the webroot (shared hosting serves it directly)", () => {
   const plan = planDeploy({ connection: sshConn, sha: "abc123", localDir: "dist" });
-  assert.equal(plan.mode, "ssh-release");
+  assert.equal(plan.mode, "ssh-mirror");
   const types = plan.steps.map((s) => s.type);
-  assert.deepEqual(types, ["ensure_dir", "upload", "symlink_swap", "verify", "prune_releases"]);
+  assert.deepEqual(types, ["ensure_dir", "upload", "verify"]);
 
   const upload = plan.steps.find((s) => s.type === "upload");
-  assert.equal(upload.remoteDir, "public_html/releases/abc123");
+  assert.equal(upload.remoteDir, "public_html"); // NOT releases/<sha>
   assert.equal(upload.method, "rsync");
-
-  const swap = plan.steps.find((s) => s.type === "symlink_swap");
-  assert.equal(swap.link, "public_html/current");
-  assert.equal(swap.target, "public_html/releases/abc123");
+  assert.equal(upload.mirror, true);
 });
 
 test("deploy plan is deterministic for identical inputs", () => {
@@ -42,14 +39,13 @@ test("deploy plan is deterministic for identical inputs", () => {
   assert.deepEqual(a, b);
 });
 
-test("prune step carries the retention window", () => {
-  const plan = planDeploy({ connection: sshConn, sha: "abc123", localDir: "dist", keepReleases: 3 });
-  const prune = plan.steps.find((s) => s.type === "prune_releases");
-  assert.equal(prune.keep, 3);
-  assert.equal(prune.releasesRoot, "public_html/releases");
+test("verify checks index.html landed in the webroot", () => {
+  const plan = planDeploy({ connection: sshConn, sha: "abc123", localDir: "dist" });
+  const v = plan.steps.find((s) => s.type === "verify");
+  assert.equal(v.path, "public_html/index.html");
 });
 
-test("ftps deploy plan mirrors into webroot, no symlink", () => {
+test("ftps deploy plan mirrors into webroot", () => {
   const plan = planDeploy({ connection: ftpsConn, sha: "abc123", localDir: "dist" });
   assert.equal(plan.mode, "ftps-mirror");
   const types = plan.steps.map((s) => s.type);
@@ -58,26 +54,19 @@ test("ftps deploy plan mirrors into webroot, no symlink", () => {
   assert.equal(plan.steps[0].mirror, true);
 });
 
-test("invalid sha is rejected (injection guard)", () => {
-  assert.throws(() => planDeploy({ connection: sshConn, sha: "../evil", localDir: "dist" }), /invalid release id/);
+test("sha is optional now, but a malformed one is still rejected", () => {
+  assert.doesNotThrow(() => planDeploy({ connection: sshConn, localDir: "dist" })); // no sha ok
   assert.throws(() => planDeploy({ connection: sshConn, sha: "a b; rm -rf /", localDir: "dist" }), /invalid release id/);
 });
 
 test("missing localDir / webroot is rejected", () => {
-  assert.throws(() => planDeploy({ connection: sshConn, sha: "abc", localDir: "" }), /localDir is required/);
+  assert.throws(() => planDeploy({ connection: sshConn, localDir: "" }), /localDir is required/);
   assert.throws(
-    () => planDeploy({ connection: { ...sshConn, webroot: undefined }, sha: "abc", localDir: "dist" }),
+    () => planDeploy({ connection: { ...sshConn, webroot: undefined }, localDir: "dist" }),
     /webroot is required/,
   );
 });
 
-test("ssh rollback plan verifies then repoints current", () => {
-  const plan = planRollback({ connection: sshConn, toSha: "old999" });
-  const types = plan.steps.map((s) => s.type);
-  assert.deepEqual(types, ["verify", "symlink_swap"]);
-  assert.equal(plan.steps[1].target, "public_html/releases/old999");
-});
-
-test("ftps rollback is rejected (no symlink on FTPS)", () => {
-  assert.throws(() => planRollback({ connection: ftpsConn, toSha: "old999" }), /requires ssh_key/);
+test("rollback on shared hosting = redeploy (no atomic switch)", () => {
+  assert.throws(() => planRollback(), /redeploy the previous build/);
 });
