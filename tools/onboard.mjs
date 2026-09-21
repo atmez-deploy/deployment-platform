@@ -2,7 +2,7 @@
 // Onboard a site repo automatically. Given a target repo, this:
 //   1) writes the caller workflow (.github/workflows/deploy.yml) into the repo
 //   2) writes the site's deploy.project.yaml config into the repo
-//   3) sets the repo's secrets (FTP_PASSWORD / FTP_HOST / ... or DEPLOY_SSH_KEY)
+//   3) sets the repo's secrets (DEPLOY_HOST / DEPLOY_USERNAME / DEPLOY_SSH_KEY / FTP_PASSWORD)
 //   4) optionally triggers the first deploy
 //
 // It uses the GitHub REST API. Auth comes from GH_TOKEN in the env (a GitHub App
@@ -26,7 +26,8 @@
 //   --build ""   -> no build (publish files as-is); --spa -> write an .htaccess for router apps.
 //
 // Secret values (read from env, only those present are set):
-//   FTP_PASSWORD, FTP_HOST, FTP_USERNAME, FTP_WEBROOT, DEPLOY_SSH_KEY
+//   DEPLOY_HOST, DEPLOY_USERNAME, DEPLOY_WEBROOT, DEPLOY_SSH_KEY, FTP_PASSWORD
+//   (legacy FTP_HOST/FTP_USERNAME/FTP_WEBROOT are still read as a fallback source)
 
 import { createRequire } from "node:module";
 // libsodium-wrappers' ESM entry has a broken internal path in some versions; the
@@ -170,10 +171,10 @@ function callerWorkflow(config, environment, platformRef) {
     `    with:\n      config: ${config}\n      environment: ${environment}\n      execute: true\n` +
     `    secrets:\n` +
     `      DEPLOY_SSH_KEY: \${{ secrets.DEPLOY_SSH_KEY }}\n` +
-    `      FTP_PASSWORD: \${{ secrets.FTP_PASSWORD }}\n` +
-    `      FTP_HOST: \${{ secrets.FTP_HOST }}\n` +
-    `      FTP_USERNAME: \${{ secrets.FTP_USERNAME }}\n` +
-    `      FTP_WEBROOT: \${{ secrets.FTP_WEBROOT }}\n`
+    `      DEPLOY_HOST: \${{ secrets.DEPLOY_HOST }}\n` +
+    `      DEPLOY_USERNAME: \${{ secrets.DEPLOY_USERNAME }}\n` +
+    `      DEPLOY_WEBROOT: \${{ secrets.DEPLOY_WEBROOT }}\n` +
+    `      FTP_PASSWORD: \${{ secrets.FTP_PASSWORD }}\n`
   );
 }
 
@@ -182,11 +183,11 @@ function siteConfig({ repoName, domain, auth, environment, webroot, build, outpu
   // primary domain may just be public_html. Caller can override with --webroot.
   const root = webroot || `domains/${domain}/public_html`;
   const targetSsh =
-    `    target:\n      driver: hostinger\n      host: \${FTP_HOST}\n      username: \${FTP_USERNAME}\n` +
+    `    target:\n      driver: hostinger\n      host: \${DEPLOY_HOST}\n      username: \${DEPLOY_USERNAME}\n` +
     `      auth: ssh_key\n      webroot: ${root}\n      transfer: rsync\n`;
   const targetFtps =
-    `    target:\n      driver: hostinger\n      host: PLACEHOLDER_or_FTP_HOST_secret\n      port: 21\n` +
-    `      username: PLACEHOLDER_or_FTP_USERNAME_secret\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n`;
+    `    target:\n      driver: hostinger\n      host: \${DEPLOY_HOST}\n      port: 21\n` +
+    `      username: \${DEPLOY_USERNAME}\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n`;
   // build.command: default to a Node build, but allow "" (no build) and a custom command.
   const cmd = build === undefined ? "npm ci && npm run build" : build;
   const out = outputDir || "dist";
@@ -254,8 +255,17 @@ async function onboardStatic(owner, repo, o, keyCache) {
     for (const f of files) await putFile(owner, repo, f.path, f.content, `ci: add atmez-deploy ${f.path}`);
   }
 
-  for (const name of ["FTP_PASSWORD", "FTP_HOST", "FTP_USERNAME", "FTP_WEBROOT", "DEPLOY_SSH_KEY"]) {
-    await setSecret(owner, repo, name, process.env[name], keyCache);
+  // Set the transport-neutral connection secrets plus the (ftp-only) password + ssh key.
+  // Values are read from env; DEPLOY_* fall back to the legacy FTP_* env if only those are set.
+  const secretEnv = {
+    DEPLOY_HOST: process.env.DEPLOY_HOST || process.env.FTP_HOST,
+    DEPLOY_USERNAME: process.env.DEPLOY_USERNAME || process.env.FTP_USERNAME,
+    DEPLOY_WEBROOT: process.env.DEPLOY_WEBROOT || process.env.FTP_WEBROOT,
+    FTP_PASSWORD: process.env.FTP_PASSWORD,
+    DEPLOY_SSH_KEY: process.env.DEPLOY_SSH_KEY,
+  };
+  for (const [name, value] of Object.entries(secretEnv)) {
+    await setSecret(owner, repo, name, value, keyCache);
   }
 
   if (o.deploy && !o.viaPr) {

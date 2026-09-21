@@ -15,7 +15,8 @@
 // Env:
 //   DEPLOY_SSH_KEY   PEM contents of the SSH private key
 //   FTP_PASSWORD     password (static ftps only)
-//   FTP_HOST/FTP_USERNAME/FTP_WEBROOT  optional overrides for ftps connection
+//   DEPLOY_HOST/DEPLOY_USERNAME/DEPLOY_WEBROOT  optional connection overrides (SSH or FTP).
+//     (Legacy FTP_HOST/FTP_USERNAME/FTP_WEBROOT still accepted as a fallback.)
 
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -82,19 +83,24 @@ function hostingerConnection(envConfig) {
   const t = envConfig.target;
   if (t?.driver !== "hostinger") fail(`expected 'hostinger' driver (got '${t?.driver}')`);
   // Connection fields may come from the config OR from repo secrets injected as env.
-  // For FTP-only sites, teams typically keep host/user in secrets, not in the repo config.
+  // Teams often keep host/user in secrets, not the repo config. Preferred (transport-neutral)
+  // names are DEPLOY_HOST/DEPLOY_USERNAME/DEPLOY_WEBROOT; the older FTP_* names still work as
+  // a fallback so already-onboarded repos don't break.
   const env = process.env;
+  const host = env.DEPLOY_HOST || env.FTP_HOST || t.host;
+  const username = env.DEPLOY_USERNAME || env.FTP_USERNAME || t.username;
+  const webroot = env.DEPLOY_WEBROOT || env.FTP_WEBROOT || t.webroot;
   const conn = {
-    host: env.FTP_HOST || t.host,
+    host,
     port: t.port ?? (t.auth === "ftps" ? 21 : 22),
-    username: env.FTP_USERNAME || t.username,
-    webroot: env.FTP_WEBROOT || t.webroot,
+    username,
+    webroot,
     auth: t.auth,
     transfer: t.transfer ?? (t.auth === "ftps" ? "ftps" : "rsync"),
   };
-  if (!conn.host) fail("host not set (config target.host or FTP_HOST secret)");
-  if (!conn.username) fail("username not set (config target.username or FTP_USERNAME secret)");
-  if (!conn.webroot) fail("webroot not set (config target.webroot or FTP_WEBROOT secret)");
+  if (!conn.host) fail("host not set (config target.host or DEPLOY_HOST secret)");
+  if (!conn.username) fail("username not set (config target.username or DEPLOY_USERNAME secret)");
+  if (!conn.webroot) fail("webroot not set (config target.webroot or DEPLOY_WEBROOT secret)");
   return conn;
 }
 

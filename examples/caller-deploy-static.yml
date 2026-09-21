@@ -19,11 +19,11 @@ jobs:
       environment: production
       execute: true
     secrets:
-      # Provide whichever set applies to this site's Hostinger plan:
-      # SSH plan:
+      # Connection details (work for both SSH and FTP plans):
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USERNAME: ${{ secrets.DEPLOY_USERNAME }}
+      DEPLOY_WEBROOT: ${{ secrets.DEPLOY_WEBROOT }}
+      # SSH plan (preferred):
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      # FTP-only plan:
+      # FTP-only plan (fallback):
       FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-      FTP_HOST: ${{ secrets.FTP_HOST }}
-      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-      FTP_WEBROOT: ${{ secrets.FTP_WEBROOT }}

@@ -7,8 +7,10 @@ name: Deploy (select platform)
 # The correct driver is chosen from the selected platform.
 #
 # Secrets (set the ones your chosen platform needs):
-#   DEPLOY_SSH_KEY   vps + hostinger-ssh
-#   FTP_PASSWORD / FTP_HOST / FTP_USERNAME   hostinger-ftp
+#   DEPLOY_SSH_KEY                              vps + hostinger-ssh
+#   DEPLOY_HOST / DEPLOY_USERNAME              connection details (SSH or FTP; optional)
+#   FTP_PASSWORD                                hostinger-ftp
+#   (legacy FTP_HOST / FTP_USERNAME still accepted as a fallback)
 
 on:
   workflow_dispatch:
@@ -78,6 +80,8 @@ jobs:
       - name: Deploy (dry run unless confirm=true)
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USERNAME: ${{ secrets.DEPLOY_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}

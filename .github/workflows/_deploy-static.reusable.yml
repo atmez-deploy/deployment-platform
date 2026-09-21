@@ -36,8 +36,15 @@ on:
     secrets:
       DEPLOY_SSH_KEY:
         required: false
+      DEPLOY_HOST:
+        required: false
+      DEPLOY_USERNAME:
+        required: false
+      DEPLOY_WEBROOT:
+        required: false
       FTP_PASSWORD:
         required: false
+      # Legacy connection-secret names, still accepted as a fallback.
       FTP_HOST:
         required: false
       FTP_USERNAME:
@@ -124,7 +131,11 @@ jobs:
       - name: Deploy
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USERNAME: ${{ secrets.DEPLOY_USERNAME }}
+          DEPLOY_WEBROOT: ${{ secrets.DEPLOY_WEBROOT }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          # Legacy fallback names
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_WEBROOT: ${{ secrets.FTP_WEBROOT }}
