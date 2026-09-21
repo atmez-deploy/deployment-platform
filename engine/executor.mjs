@@ -38,7 +38,18 @@ function sshBase(conn, keyPath) {
 export function toCommands(plan, conn, opts = {}) {
   if (plan.driver === "docker-vps") return dockerVpsToCommands(plan, conn, opts);
   if (plan.driver === "cpanel") return cpanelToCommands(plan, conn, opts);
+  if (plan.driver === "server-setup") return serverSetupToCommands(plan, conn, opts);
   return staticToCommands(plan, conn, opts);
+}
+
+/** Compile a server-setup plan to ssh commands. Each `run` step is one remote sh -c. */
+function serverSetupToCommands(plan, conn, opts = {}) {
+  const { keyPath } = opts;
+  return plan.steps.map((step) => {
+    if (step.type !== "run") throw new Error(`unknown server-setup step type: ${step.type}`);
+    const s = sshBase(conn, keyPath);
+    return { label: step.label, bin: s.bin, args: [...s.args, s.dest, step.command] };
+  });
 }
 
 /**

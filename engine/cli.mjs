@@ -31,6 +31,7 @@ import { resolveTarget } from "./registry.mjs";
 import { registerProject } from "./register.mjs";
 import { preflight, listPlatforms, PLATFORMS } from "./platforms.mjs";
 import { resolveProject, listProjectIds } from "./projects.mjs";
+import { planServerSetup } from "./server-setup.mjs";
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -140,7 +141,7 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|register|list-projects|resolve-project|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|server-setup|register|list-projects|resolve-project|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
 
   // These two don't need a config/env — handle before the deploy-only guards.
   if (opts.command === "platforms") {
@@ -203,6 +204,33 @@ function main() {
     console.log(`BUILD_COMMAND=${resolved.build.command ?? ""}`);
     console.log(`BUILD_IMAGE=${resolved.build.image ?? ""}`);
     console.log(`OUTPUT_DIR=${resolved.build.outputDir ?? ""}`);
+    return;
+  }
+
+  // server-setup: one-time VPS prep (docker/nginx/certbot, deploy user, base dirs). The
+  // connection comes from --registry + --ref, OR explicit --host/--port/--username. The
+  // deploy PUBLIC key (to authorize) is read from --pubkey <path> or the DEPLOY_PUBLIC_KEY
+  // env (it is not secret). The SSH key used to CONNECT for setup is DEPLOY_SSH_KEY as usual.
+  if (opts.command === "server-setup") {
+    let connection;
+    if (opts.registry && opts.ref) {
+      const registry = loadYaml(opts.registry);
+      const vps = resolveTarget(registry, opts.ref);
+      connection = { host: vps.connection.host, port: vps.connection.port ?? 22, username: vps.connection.username };
+    } else if (opts.host && opts.username) {
+      connection = { host: opts.host, port: Number(opts.port ?? 22), username: opts.username };
+    } else {
+      fail("provide --registry <path> --ref <vps-id>, OR --host <h> --username <u> [--port <p>]");
+    }
+    let publicKey = process.env.DEPLOY_PUBLIC_KEY;
+    if (opts.pubkey) publicKey = readFileSync(opts.pubkey, "utf8").trim();
+    const plan = planServerSetup({
+      basePath: opts.basePath || "/opt",
+      deployUser: opts.deployUser,
+      publicKey,
+      installPackages: process.argv.includes("--skip-packages") ? false : true,
+    });
+    run(opts.command, plan, connection);
     return;
   }
 
