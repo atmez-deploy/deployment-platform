@@ -57,6 +57,8 @@ function parseArgs(argv) {
     else if (a === "--output-dir") o.outputDir = argv[++i];
     else if (a === "--spa") o.spa = true;                  // publish an .htaccess for router apps
     else if (a === "--via-pr") o.viaPr = true;             // open a PR instead of pushing to main
+    else if (a === "--branch") o.branch = argv[++i];       // client branch to auto-deploy on (default main)
+    else if (a === "--dockerfile") o.dockerfile = argv[++i]; // service Dockerfile path (default Dockerfile)
   }
   o.environment = o.environment || (o.kind === "service" ? "staging" : "production");
   o.service = o.service || "backend";
@@ -207,18 +209,47 @@ function siteConfig({ repoName, domain, auth, environment, webroot, build, outpu
   );
 }
 
-function serviceCallerWorkflow(config, platformRef) {
+function serviceCallerWorkflow(config, platformRef, { service, environment, branch, dockerfile }) {
+  const br = branch || "main";
+  const df = dockerfile || "Dockerfile";
+  // Full push-triggered backend CI/CD, in the CLIENT's repo:
+  //   1) build the Docker image from their code
+  //   2) push it to GHCR as an immutable ref (tagged with the commit sha)
+  //   3) call our reusable workflow to blue/green deploy that exact image to the VPS
+  // So every push to their branch auto-deploys, just like a static site.
   return (
     `name: Deploy service\n` +
-    `on:\n  workflow_dispatch:\n    inputs:\n` +
-    `      image: { description: Immutable image ref, required: true }\n` +
-    `      environment: { description: Environment, required: false, default: staging }\n` +
-    `      service: { description: Service name, required: false, default: backend }\n\n` +
-    `jobs:\n  deploy:\n` +
+    `on:\n` +
+    `  push:\n    branches: [${br}]\n` +
+    `  workflow_dispatch:\n` +
+    `    inputs:\n` +
+    `      environment: { description: Environment, required: false, default: ${environment} }\n` +
+    `      service: { description: Service name, required: false, default: ${service} }\n\n` +
+    `permissions:\n  contents: read\n  packages: write\n\n` +
+    `jobs:\n` +
+    `  build:\n` +
+    `    runs-on: ubuntu-latest\n` +
+    `    outputs:\n      image: \${{ steps.meta.outputs.image }}\n` +
+    `    steps:\n` +
+    `      - uses: actions/checkout@v4\n` +
+    `      - name: Log in to GHCR\n` +
+    `        uses: docker/login-action@v3\n` +
+    `        with:\n          registry: ghcr.io\n          username: \${{ github.actor }}\n          password: \${{ secrets.GITHUB_TOKEN }}\n` +
+    `      - name: Compute image ref\n        id: meta\n` +
+    `        run: echo "image=ghcr.io/\${{ github.repository }}-${service}:\${{ github.sha }}" >> "$GITHUB_OUTPUT"\n` +
+    `      - name: Build and push\n` +
+    `        uses: docker/build-push-action@v6\n` +
+    `        with:\n          context: .\n          file: ${df}\n          push: true\n          tags: \${{ steps.meta.outputs.image }}\n\n` +
+    `  deploy:\n` +
+    `    needs: build\n` +
     `    uses: atmez-deploy/deployment-platform/.github/workflows/_deploy-service.reusable.yml@${platformRef}\n` +
-    `    with:\n      config: ${config}\n      registry: deploy.registry.yaml\n` +
-    `      environment: \${{ github.event.inputs.environment }}\n` +
-    `      service: \${{ github.event.inputs.service }}\n      image: \${{ github.event.inputs.image }}\n      execute: true\n` +
+    `    with:\n` +
+    `      config: ${config}\n` +
+    `      registry: deploy.registry.yaml\n` +
+    `      environment: \${{ github.event.inputs.environment || '${environment}' }}\n` +
+    `      service: \${{ github.event.inputs.service || '${service}' }}\n` +
+    `      image: \${{ needs.build.outputs.image }}\n` +
+    `      execute: true\n` +
     `    secrets:\n      DEPLOY_SSH_KEY: \${{ secrets.DEPLOY_SSH_KEY }}\n`
   );
 }
@@ -277,17 +308,43 @@ async function onboardStatic(owner, repo, o, keyCache) {
   }
 }
 
+function serviceFiles(repo, o) {
+  const configPath = "deploy.project.yaml";
+  return [
+    { path: configPath, content: serviceConfig({ repoName: repo, domain: o.domain, service: o.service, environment: o.environment, vpsRef: o.vpsRef }) },
+    {
+      path: ".github/workflows/deploy.yml",
+      content: serviceCallerWorkflow(configPath, o.platformRef, {
+        service: o.service,
+        environment: o.environment,
+        branch: o.branch,
+        dockerfile: o.dockerfile,
+      }),
+    },
+  ];
+}
+
 async function onboardService(owner, repo, o, keyCache) {
   if (!o.vpsRef) die("--vps-ref <id> is required for service onboarding (the registry VPS id)");
-  const configPath = "deploy.project.yaml";
   console.log(`onboarding service ${o.repo} [${o.service}] on ${o.vpsRef} -> ${o.domain}`);
-  await putFile(owner, repo, configPath, serviceConfig({ repoName: repo, domain: o.domain, service: o.service, environment: o.environment, vpsRef: o.vpsRef }), "chore: add atmez-deploy service config");
-  await putFile(owner, repo, ".github/workflows/deploy.yml", serviceCallerWorkflow(configPath, o.platformRef), "ci: add atmez-deploy service caller workflow");
+  const files = serviceFiles(repo, o);
+
+  if (o.viaPr) {
+    const pr = await openSetupPr(owner, repo, files, "atmez-deploy: set up backend CI/CD (build + blue/green deploy)");
+    console.log(`  opened PR: ${pr.html_url}`);
+  } else {
+    for (const f of files) await putFile(owner, repo, f.path, f.content, `ci: add atmez-deploy ${f.path}`);
+  }
+
   await setSecret(owner, repo, "DEPLOY_SSH_KEY", process.env.DEPLOY_SSH_KEY, keyCache);
-  // No auto first-deploy: a service deploy needs an image ref, which the repo's own CI
-  // produces. The engineer runs the caller with the image once CI has pushed it.
-  console.log("  service onboarded; run the 'Deploy service' workflow with an image ref to deploy");
-  console.log("  NOTE: register this project+environment in the registry so a port+domain are allocated");
+
+  // Backends need resources allocated (port + domain) BEFORE the first deploy. This is a
+  // one-time registry step on OUR side — the client's repo then auto-deploys on every push.
+  console.log("");
+  console.log("  IMPORTANT — one-time registry step (on the platform side), before the first deploy:");
+  console.log(`    node engine/cli.mjs register --config <this-config> --env ${o.environment} --registry <registry.yaml> --execute`);
+  console.log("  After that, every push to the client's branch builds the image and blue/green-deploys it.");
+  if (o.viaPr) console.log("  (the workflow starts working once the PR is merged)");
 }
 
 /** Print the files we WOULD add to the client repo, without any API calls. */
@@ -300,6 +357,16 @@ function dryRunStatic(repo, o) {
   console.log(callerWorkflow(configPath, o.environment, o.platformRef));
 }
 
+/** Dry-run preview for a backend service onboarding. */
+function dryRunService(repo, o) {
+  if (!o.vpsRef) die("--vps-ref <id> is required for service onboarding");
+  console.log(`# DRY RUN — files atmez-deploy would add to ${o.repo} (backend service)\n`);
+  for (const f of serviceFiles(repo, o)) {
+    console.log(`===== ${f.path} =====`);
+    console.log(f.content);
+  }
+}
+
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   const dryRun = process.argv.includes("--dry-run");
@@ -310,8 +377,8 @@ async function main() {
   const [owner, repo] = o.repo.split("/");
 
   if (dryRun) {
-    if (o.kind === "service") die("--dry-run currently supports --kind static");
-    dryRunStatic(repo, o);
+    if (o.kind === "service") dryRunService(repo, o);
+    else dryRunStatic(repo, o);
     console.log("done (dry run — nothing was changed).");
     return;
   }
