@@ -68,6 +68,15 @@ jobs:
         working-directory: _platform
         run: npm install
 
+      - name: Preflight gate
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          node _platform/engine/cli.mjs check \
+            --config "${{ inputs.config }}" \
+            --env "${{ inputs.environment }}" \
+            --image "${{ inputs.image }}"
+
       - name: Deploy service
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}

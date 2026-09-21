@@ -127,6 +127,24 @@ jobs:
             echo "<h1>atmez-deploy</h1><p>${{ github.sha }}</p>" > "$RESOLVED/index.html"
           fi
 
+      # 3b. Preflight gate — verify config + inputs + secrets before deploying. Fails the
+      #     job (non-zero exit) if anything is missing, so we never deploy a broken setup.
+      - name: Preflight gate
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USERNAME: ${{ secrets.DEPLOY_USERNAME }}
+          DEPLOY_WEBROOT: ${{ secrets.DEPLOY_WEBROOT }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_WEBROOT: ${{ secrets.FTP_WEBROOT }}
+        run: |
+          node _platform/engine/cli.mjs check \
+            --config "${{ inputs.config }}" \
+            --env "${{ inputs.environment }}" \
+            --dir "${{ steps.build.outputs.output_dir }}"
+
       # 4. Publish via the engine
       - name: Deploy
         env:

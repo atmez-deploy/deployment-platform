@@ -32,6 +32,7 @@ import { registerProject } from "./register.mjs";
 import { preflight, listPlatforms, PLATFORMS } from "./platforms.mjs";
 import { resolveProject, listProjectIds } from "./projects.mjs";
 import { planServerSetup } from "./server-setup.mjs";
+import { runPreflight, requiredSecretsFor } from "./preflight-check.mjs";
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -141,7 +142,7 @@ function run(command, plan, connection) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   globalThis.__execute = opts.execute;
-  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|server-setup|register|list-projects|resolve-project|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
+  if (!opts.command) fail("usage: cli.mjs <platforms|preflight|check|server-setup|register|list-projects|resolve-project|deploy|deploy-cpanel|rollback|deploy-service|rollback-service> ...");
 
   // These two don't need a config/env — handle before the deploy-only guards.
   if (opts.command === "platforms") {
@@ -204,6 +205,38 @@ function main() {
     console.log(`BUILD_COMMAND=${resolved.build.command ?? ""}`);
     console.log(`BUILD_IMAGE=${resolved.build.image ?? ""}`);
     console.log(`OUTPUT_DIR=${resolved.build.outputDir ?? ""}`);
+    return;
+  }
+
+  // check: DEEP preflight gate. Verifies config coherence + required inputs + required
+  // secrets for a concrete deploy, and exits non-zero if anything is wrong — so a workflow
+  // can gate on it before running the real deploy. Secrets are detected by NAME from env
+  // (presence only; values are never read here). Inputs: --branch/--image/--dir as relevant.
+  if (opts.command === "check") {
+    if (!opts.config) fail("--config is required");
+    if (!opts.env) fail("--env is required");
+    const cfg = loadYaml(opts.config);
+    const target = cfg?.environments?.[opts.env]?.target || {};
+    // Which secret names to look for: the ones this target requires + accepts.
+    const { required, optional } = requiredSecretsFor(target);
+    const candidates = [...new Set([...required, ...optional, "DEPLOY_SSH_KEY", "FTP_PASSWORD", "CPANEL_API_TOKEN"])];
+    const presentSecrets = candidates.filter((n) => process.env[n] != null && process.env[n] !== "");
+    const report = runPreflight({
+      config: cfg,
+      environment: opts.env,
+      presentSecrets,
+      inputs: { branch: opts.branch, image: Array.isArray(opts.image) ? opts.image[0] : opts.image, dir: opts.dir },
+    });
+    console.log(`# preflight: ${cfg?.project?.name ?? "(project)"} / ${opts.env}`);
+    for (const c of report.checks) {
+      console.log(`  ${c.ok ? "OK  " : "FAIL"}  ${c.name}${c.detail ? `  — ${c.detail}` : ""}`);
+    }
+    if (!report.ok) {
+      console.error(`\npreflight FAILED (${report.failures.length}): ${report.failures.join(", ")}`);
+      console.error("fix the items above before deploying.");
+      process.exit(1);
+    }
+    console.log("\npreflight OK — safe to deploy.");
     return;
   }
 
