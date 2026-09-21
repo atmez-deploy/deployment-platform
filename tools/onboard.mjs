@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 // Onboard a site repo automatically. Given a target repo, this:
+//   0) CHECKS PREREQUISITES first (repo access + required inputs) and refuses to proceed
+//      if anything is missing — see checkPrerequisites()
 //   1) writes the caller workflow (.github/workflows/deploy.yml) into the repo
 //   2) writes the site's deploy.project.yaml config into the repo
 //   3) sets the repo's secrets (DEPLOY_HOST / DEPLOY_USERNAME / DEPLOY_SSH_KEY / FTP_PASSWORD)
@@ -9,12 +11,18 @@
 // installation token or a PAT with contents+secrets+actions write on the target repo).
 // NOTHING is hardcoded; secret VALUES are read from env and never logged.
 //
+// ACCESS is a prerequisite collected up front: the client grants Write access (collaborator
+// or GitHub App), OR use --via-pr to open a PR they merge (needs less access).
+//
 // Usage:
 //   GH_TOKEN=... node tools/onboard.mjs \
 //     --repo owner/name --domain www.example.com --auth ssh_key \
 //     [--webroot domains/www.example.com/public_html] \
 //     [--build "npm ci && npm run build"] [--output-dir dist] [--spa] \
-//     [--platform-ref main] [--via-pr] [--no-deploy]
+//     [--platform-ref main] [--via-pr] [--no-deploy] [--check-only] [--dry-run]
+//
+//   --check-only -> verify prerequisites (access + inputs) and stop, without writing.
+//   --dry-run    -> print the files we WOULD add, without any API calls.
 //
 // Models:
 //   default  -> pushes the two files straight to the repo's default branch, then triggers
@@ -91,6 +99,73 @@ async function gh(path, { method = "GET", body } = {}) {
 }
 
 const b64 = (s) => Buffer.from(s, "utf8").toString("base64");
+
+/**
+ * Verify the onboarding PREREQUISITES before writing anything. Fails early with a clear,
+ * actionable message so we never half-onboard. Checks:
+ *   1) the token is present
+ *   2) the repo exists and the token can read it (else: not found / no access)
+ *   3) the token has WRITE access (repo.permissions.push) — required to create the files
+ *      (or open a PR); if only read, tell the user exactly what to grant
+ *   4) the required deploy inputs for the chosen kind are present (domain, and for a
+ *      service: the VPS ref)
+ * Returns nothing on success; calls die() with guidance on failure.
+ */
+async function checkPrerequisites(owner, repo, o) {
+  console.log(`# checking prerequisites for ${o.repo} ...`);
+
+  if (!token) {
+    die(
+      "no GH_TOKEN. We need a token with write access to the client repo.\n" +
+        "  How to get it: ask the client to either (a) add us as a repo collaborator with\n" +
+        "  Write access, or (b) install our GitHub App on the repo. Then set GH_TOKEN to a\n" +
+        "  token for that access.",
+    );
+  }
+
+  // 2 + 3: read the repo and inspect our permission level.
+  const info = await gh(`/repos/${owner}/${repo}`);
+  if (!info) {
+    die(
+      `cannot access ${o.repo} (not found, or the token has no access).\n` +
+        "  Fix: confirm the repo name is 'owner/name', and that the client granted us access\n" +
+        "  (collaborator with Write, or GitHub App installed on this repo).",
+    );
+  }
+  console.log(`  OK   repo reachable (default branch: ${info.default_branch})`);
+
+  const canPush = info.permissions?.push === true || info.permissions?.admin === true;
+  const canPr = info.permissions?.pull === true; // PRs need at least read + fork/branch write
+  if (o.viaPr) {
+    if (!canPush && !canPr) {
+      die(
+        "the token cannot open a pull request on this repo.\n" +
+          "  Fix: ask the client for at least Write access (or install the GitHub App), then retry.",
+      );
+    }
+    console.log("  OK   can open a pull request (--via-pr)");
+  } else {
+    if (!canPush) {
+      die(
+        "the token has READ-only access; it cannot write files to the repo.\n" +
+          "  Fix options:\n" +
+          "    - ask the client to grant Write access (Settings -> Collaborators), OR\n" +
+          "    - re-run with --via-pr to open a Pull Request they merge (needs less access).",
+      );
+    }
+    console.log("  OK   can write files (Write access confirmed)");
+  }
+
+  // 4: required inputs for the chosen kind.
+  if (!o.domain) die("missing --domain (the site/service domain).");
+  console.log(`  OK   domain: ${o.domain}`);
+  if (o.kind === "service" && !o.vpsRef) {
+    die("missing --vps-ref (the registry VPS id the backend deploys to).");
+  }
+  if (o.kind === "service") console.log(`  OK   vps ref: ${o.vpsRef}`);
+
+  console.log("  prerequisites OK.\n");
+}
 
 async function putFile(owner, repo, path, content, message) {
   // need the existing sha if the file already exists
@@ -370,7 +445,9 @@ function dryRunService(repo, o) {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   const dryRun = process.argv.includes("--dry-run");
-  if (!dryRun && !token) die("GH_TOKEN env is required (GitHub App installation token or PAT)");
+  const checkOnly = process.argv.includes("--check-only");
+  // --dry-run needs no token; --check-only handles the missing-token case with guidance.
+  if (!dryRun && !checkOnly && !token) die("GH_TOKEN env is required (GitHub App installation token or PAT)");
   if (!o.repo || !o.repo.includes("/")) die("--repo owner/name is required");
   if (!o.domain) die("--domain is required");
   if (!["static", "service"].includes(o.kind)) die("--kind must be 'static' or 'service'");
@@ -380,6 +457,13 @@ async function main() {
     if (o.kind === "service") dryRunService(repo, o);
     else dryRunStatic(repo, o);
     console.log("done (dry run — nothing was changed).");
+    return;
+  }
+
+  // Prerequisite gate — verify access + inputs BEFORE touching the repo.
+  await checkPrerequisites(owner, repo, o);
+  if (checkOnly) {
+    console.log("check-only: prerequisites satisfied. Re-run without --check-only to onboard.");
     return;
   }
 
