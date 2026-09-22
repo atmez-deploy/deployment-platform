@@ -51,6 +51,9 @@ on:
         required: false
       FTP_WEBROOT:
         required: false
+      # Only needed if the platform engine repo is PRIVATE: a token that can read it.
+      PLATFORM_TOKEN:
+        required: false
 
 jobs:
   deploy:
@@ -60,13 +63,16 @@ jobs:
       - name: Checkout site repo
         uses: actions/checkout@v4
 
-      # 2. Check out the platform engine at a pinned ref into ./_platform
+      # 2. Check out the platform engine at a pinned ref into ./_platform.
+      #    If the platform repo is PUBLIC, no token is needed. If it's PRIVATE, the caller
+      #    must pass a PLATFORM_TOKEN secret that can read it (see secrets below).
       - name: Checkout deployment platform
         uses: actions/checkout@v4
         with:
           repository: atmez-deploy/deployment-platform
           ref: ${{ inputs.platform_ref }}
           path: _platform
+          token: ${{ secrets.PLATFORM_TOKEN || github.token }}
 
       # Node is set up only so the ENGINE (js-yaml) runs — NOT for the app build.
       # The app build uses whatever the project declares (any language) or a build.image.
