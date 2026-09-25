@@ -25,6 +25,15 @@ on:
       webroot:
         description: "Hosting web folder (blank = domains/<domain>/public_html)"
         required: false
+      host:
+        description: "Hosting host/IP (e.g. 145.223.17.98)"
+        required: true
+      username:
+        description: "Hosting username (e.g. u443001285)"
+        required: true
+      port:
+        description: "Hosting SSH port (blank = 22)"
+        required: false
       build_command:
         description: "Build command (blank = npm ci && npm run build; type 'none' for no build)"
         required: false
@@ -71,6 +80,9 @@ jobs:
           IN_REPO: ${{ github.event.inputs.repo }}
           IN_DOMAIN: ${{ github.event.inputs.domain }}
           IN_WEBROOT: ${{ github.event.inputs.webroot }}
+          IN_HOST: ${{ github.event.inputs.host }}
+          IN_USERNAME: ${{ github.event.inputs.username }}
+          IN_PORT: ${{ github.event.inputs.port }}
           IN_BUILD: ${{ github.event.inputs.build_command }}
           IN_OUTPUT_DIR: ${{ github.event.inputs.output_dir }}
           IN_SPA: ${{ github.event.inputs.spa }}
@@ -87,6 +99,9 @@ jobs:
           # Build the argv as an array so values with spaces are passed safely (no eval).
           ARGS=(--repo "$IN_REPO" --domain "$IN_DOMAIN")
           [ -n "$IN_WEBROOT" ] && ARGS+=(--webroot "$IN_WEBROOT")
+          [ -n "$IN_HOST" ] && ARGS+=(--host "$IN_HOST")
+          [ -n "$IN_USERNAME" ] && ARGS+=(--username "$IN_USERNAME")
+          [ -n "$IN_PORT" ] && ARGS+=(--port "$IN_PORT")
 
           # build command: 'none' -> no build (empty string); blank -> tool default
           if [ "$IN_BUILD" = "none" ]; then

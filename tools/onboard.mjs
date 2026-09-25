@@ -17,9 +17,13 @@
 // Usage:
 //   GH_TOKEN=... node tools/onboard.mjs \
 //     --repo owner/name --domain www.example.com --auth ssh_key \
+//     [--host 1.2.3.4] [--username u123] [--port 65002] \
 //     [--webroot domains/www.example.com/public_html] \
 //     [--build "npm ci && npm run build"] [--output-dir dist] [--spa] \
 //     [--platform-ref main] [--via-pr] [--no-deploy] [--check-only] [--dry-run]
+//
+//   --host/--username/--port write LITERAL connection values into the config (they aren't
+//   secret). Omit them to fall back to DEPLOY_HOST/DEPLOY_USERNAME secret placeholders.
 //
 //   --check-only -> verify prerequisites (access + inputs) and stop, without writing.
 //   --dry-run    -> print the files we WOULD add, without any API calls.
@@ -67,6 +71,9 @@ function parseArgs(argv) {
     else if (a === "--via-pr") o.viaPr = true;             // open a PR instead of pushing to main
     else if (a === "--branch") o.branch = argv[++i];       // client branch to auto-deploy on (default main)
     else if (a === "--dockerfile") o.dockerfile = argv[++i]; // service Dockerfile path (default Dockerfile)
+    else if (a === "--host") o.host = argv[++i];           // hosting host/IP (literal, not secret)
+    else if (a === "--username") o.username = argv[++i];   // hosting username (literal, not secret)
+    else if (a === "--port") o.port = argv[++i];           // hosting SSH/FTP port
   }
   o.environment = o.environment || (o.kind === "service" ? "staging" : "production");
   o.service = o.service || "backend";
@@ -255,16 +262,22 @@ function callerWorkflow(config, environment, platformRef) {
   );
 }
 
-function siteConfig({ repoName, domain, auth, environment, webroot, build, outputDir, spa }) {
+function siteConfig({ repoName, domain, auth, environment, webroot, build, outputDir, spa, host, username, port }) {
   // Default webroot: real Hostinger domains live under domains/<domain>/public_html; a
   // primary domain may just be public_html. Caller can override with --webroot.
   const root = webroot || `domains/${domain}/public_html`;
+  // host/username are NOT secret — write literals when provided; otherwise fall back to the
+  // DEPLOY_HOST/DEPLOY_USERNAME secret placeholders (which the client repo must then set).
+  const hostVal = host || "${DEPLOY_HOST}";
+  const userVal = username || "${DEPLOY_USERNAME}";
+  const sshPortLine = port ? `      port: ${port}\n` : "";
+  const ftpsPortLine = port ? `      port: ${port}\n` : "      port: 21\n";
   const targetSsh =
-    `    target:\n      driver: hostinger\n      host: \${DEPLOY_HOST}\n      username: \${DEPLOY_USERNAME}\n` +
-    `      auth: ssh_key\n      webroot: ${root}\n      transfer: rsync\n`;
+    `    target:\n      driver: hostinger\n      host: ${hostVal}\n${sshPortLine}      username: ${userVal}\n` +
+    `      auth: ssh_key\n      webroot: ${root}\n      transfer: rsync\n      secret_ref: DEPLOY_SSH_KEY\n`;
   const targetFtps =
-    `    target:\n      driver: hostinger\n      host: \${DEPLOY_HOST}\n      port: 21\n` +
-    `      username: \${DEPLOY_USERNAME}\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n`;
+    `    target:\n      driver: hostinger\n      host: ${hostVal}\n${ftpsPortLine}` +
+    `      username: ${userVal}\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n      secret_ref: FTP_PASSWORD\n`;
   // build.command: default to a Node build, but allow "" (no build) and a custom command.
   const cmd = build === undefined ? "npm ci && npm run build" : build;
   const out = outputDir || "dist";
@@ -346,7 +359,7 @@ async function onboardStatic(owner, repo, o, keyCache) {
   const configPath = "deploy.project.yaml";
   console.log(`onboarding static ${o.repo} (${o.auth}) -> ${o.domain}`);
   const files = [
-    { path: configPath, content: siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa }) },
+    { path: configPath, content: siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa, host: o.host, username: o.username, port: o.port }) },
     { path: ".github/workflows/deploy.yml", content: callerWorkflow(configPath, o.environment, o.platformRef) },
   ];
 
@@ -427,7 +440,7 @@ function dryRunStatic(repo, o) {
   const configPath = "deploy.project.yaml";
   console.log(`# DRY RUN — files atmez-deploy would add to ${o.repo}\n`);
   console.log(`===== ${configPath} =====`);
-  console.log(siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa }));
+  console.log(siteConfig({ repoName: repo, domain: o.domain, auth: o.auth, environment: o.environment, webroot: o.webroot, build: o.build, outputDir: o.outputDir, spa: o.spa, host: o.host, username: o.username, port: o.port }));
   console.log(`===== .github/workflows/deploy.yml =====`);
   console.log(callerWorkflow(configPath, o.environment, o.platformRef));
 }
