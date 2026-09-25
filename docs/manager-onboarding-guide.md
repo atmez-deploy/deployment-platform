@@ -94,9 +94,34 @@ hosting uses FTP instead, they'll tell you to add `FTP_PASSWORD` instead.)
 
 ---
 
+## Step 4b — (Click-only alternative) Run onboarding from a button
+
+Instead of asking the platform team to run a terminal command, you can onboard from a button —
+no terminal needed:
+
+1. Go to the platform repo's Actions page:
+   **https://github.com/atmez-deploy/deployment-platform/actions**
+2. In the left sidebar, click **"Onboard client site"**.
+3. Click **"Run workflow"** and fill the form:
+   - **repo**: the client repo (`owner/name`)
+   - **domain**: e.g. `www.clientsite.com`
+   - **webroot**: leave blank for `domains/<domain>/public_html`, or set it
+   - **build_command**: e.g. `npm ci && npm run build` (blank = default; type `none` for plain HTML)
+   - **output_dir**: e.g. `dist` (blank = auto-detect)
+   - **spa**: check if it's a React/Vue router app
+   - **via_pr**: check to open a Pull Request instead of writing to `main`
+   - **check_only**: check this the FIRST time — it verifies access + inputs and changes nothing
+4. Run once with **check_only = true** to confirm everything is OK, then run again with it
+   unchecked to actually onboard.
+
+This requires two one-time secrets on the platform repo (the platform team sets these once):
+`ONBOARD_TOKEN` (write access to client repos) and `CLIENT_DEPLOY_SSH_KEY` (the deploy key).
+With the button, the `DEPLOY_SSH_KEY` secret is installed on the client repo automatically —
+you can skip Step 4 in that case.
+
 ## Step 5 — First deploy
 
-After onboarding (Step 3) and the secret (Step 4) are done:
+After onboarding (Step 3 or 4b) and the secret (Step 4, unless the button did it) are done:
 
 - The two files were added to the repo, which already triggers a deploy run, **or**
 - Trigger it yourself: client repo → **Actions** tab → **Deploy** → **Run workflow** → main.

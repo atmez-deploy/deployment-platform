@@ -1,0 +1,115 @@
+name: Onboard client site
+
+# CLICK-ONLY onboarding. Fill in the form and Run — no terminal needed. This adds the two
+# atmez-deploy files (deploy.project.yaml + .github/workflows/deploy.yml) to the CLIENT repo
+# and installs the deploy secret, so the client repo then deploys itself on every push.
+#
+# One-time platform-repo secrets (Settings -> Secrets and variables -> Actions):
+#   ONBOARD_TOKEN           a token (PAT or GitHub App) with WRITE access to client repos
+#                           (contents + workflows + secrets). Used to add the files + secret.
+#   CLIENT_DEPLOY_SSH_KEY   the deploy PRIVATE key to install as DEPLOY_SSH_KEY in the client
+#                           repo (pairs with the public key registered on the hosting account).
+#
+# Tip: run once with "check_only = true" to verify access + inputs without changing anything,
+# then run again with check_only = false to actually onboard.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Client repo (owner/name)"
+        required: true
+      domain:
+        description: "Domain the site serves on (e.g. www.clientsite.com)"
+        required: true
+      webroot:
+        description: "Hosting web folder (blank = domains/<domain>/public_html)"
+        required: false
+      build_command:
+        description: "Build command (blank = npm ci && npm run build; type 'none' for no build)"
+        required: false
+      output_dir:
+        description: "Build output folder (blank = auto-detect; e.g. dist, build, public)"
+        required: false
+      spa:
+        description: "Single-page app? (React/Vue router) — publishes an .htaccess"
+        type: boolean
+        default: false
+      via_pr:
+        description: "Open a Pull Request instead of writing to the client's main branch"
+        type: boolean
+        default: false
+      trigger_first_deploy:
+        description: "Trigger the first deploy after onboarding"
+        type: boolean
+        default: true
+      check_only:
+        description: "Only check prerequisites (access + inputs), change nothing"
+        type: boolean
+        default: false
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install engine deps
+        run: npm install
+
+      - name: Onboard
+        env:
+          # Token that can write to the CLIENT repo (add the files + set its secret).
+          GH_TOKEN: ${{ secrets.ONBOARD_TOKEN }}
+          # The deploy private key the tool installs as DEPLOY_SSH_KEY in the client repo.
+          DEPLOY_SSH_KEY: ${{ secrets.CLIENT_DEPLOY_SSH_KEY }}
+          # Inputs passed via env (NOT interpolated into the shell) to avoid injection.
+          IN_REPO: ${{ github.event.inputs.repo }}
+          IN_DOMAIN: ${{ github.event.inputs.domain }}
+          IN_WEBROOT: ${{ github.event.inputs.webroot }}
+          IN_BUILD: ${{ github.event.inputs.build_command }}
+          IN_OUTPUT_DIR: ${{ github.event.inputs.output_dir }}
+          IN_SPA: ${{ github.event.inputs.spa }}
+          IN_VIA_PR: ${{ github.event.inputs.via_pr }}
+          IN_TRIGGER: ${{ github.event.inputs.trigger_first_deploy }}
+          IN_CHECK_ONLY: ${{ github.event.inputs.check_only }}
+        run: |
+          set -e
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::ONBOARD_TOKEN secret is not set on this repo. Add a token with write access to client repos."
+            exit 1
+          fi
+
+          # Build the argv as an array so values with spaces are passed safely (no eval).
+          ARGS=(--repo "$IN_REPO" --domain "$IN_DOMAIN")
+          [ -n "$IN_WEBROOT" ] && ARGS+=(--webroot "$IN_WEBROOT")
+
+          # build command: 'none' -> no build (empty string); blank -> tool default
+          if [ "$IN_BUILD" = "none" ]; then
+            ARGS+=(--build "")
+          elif [ -n "$IN_BUILD" ]; then
+            ARGS+=(--build "$IN_BUILD")
+          fi
+
+          [ -n "$IN_OUTPUT_DIR" ] && ARGS+=(--output-dir "$IN_OUTPUT_DIR")
+          [ "$IN_SPA" = "true" ] && ARGS+=(--spa)
+          [ "$IN_VIA_PR" = "true" ] && ARGS+=(--via-pr)
+          [ "$IN_TRIGGER" != "true" ] && ARGS+=(--no-deploy)
+          [ "$IN_CHECK_ONLY" = "true" ] && ARGS+=(--check-only)
+
+          echo "Running onboarding (repo=$IN_REPO, check_only=$IN_CHECK_ONLY)"
+          node tools/onboard.mjs "${ARGS[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Onboarding run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repo: \`${{ github.event.inputs.repo }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Domain: \`${{ github.event.inputs.domain }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Mode: ${{ github.event.inputs.check_only == 'true' && 'check-only (no changes)' || (github.event.inputs.via_pr == 'true' && 'opened a PR' || 'wrote files to main') }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "If this wrote files: the client repo now deploys itself on every push." >> "$GITHUB_STEP_SUMMARY"
