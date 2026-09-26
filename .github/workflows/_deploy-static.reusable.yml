@@ -55,6 +55,14 @@ on:
       PLATFORM_TOKEN:
         required: false
 
+# Serialize deploys for the SAME site (config + environment) so two runs never mirror into
+# the same webroot at once (the race that caused a spurious failure). Different sites still
+# run in parallel. cancel-in-progress:false lets an in-flight deploy finish cleanly rather
+# than being killed mid-rsync.
+concurrency:
+  group: atmez-deploy-static-${{ inputs.config }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
