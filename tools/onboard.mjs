@@ -278,14 +278,16 @@ function siteConfig({ repoName, domain, auth, environment, webroot, build, outpu
   const targetFtps =
     `    target:\n      driver: hostinger\n      host: ${hostVal}\n${ftpsPortLine}` +
     `      username: ${userVal}\n      auth: ftps\n      webroot: ${root}\n      transfer: ftps\n      secret_ref: FTP_PASSWORD\n`;
-  // build.command: default to a Node build, but allow "" (no build) and a custom command.
-  const cmd = build === undefined ? "npm ci && npm run build" : build;
-  const out = outputDir || "dist";
-  const buildBlock =
-    `    build:\n` +
-    (cmd ? `      command: ${cmd}\n` : "") +
-    `      output_dir: ${out}\n` +
-    (spa ? `      spa: true\n` : "");
+  // Build block. If no --build is given, we OMIT the command so the platform AUTO-DETECTS
+  // how to build the repo at deploy time (package.json/Hugo/Jekyll/plain-HTML). An explicit
+  // --build "" also means "no build". Likewise output_dir is omitted unless given, so it's
+  // auto-detected from what the build produced. spa adds the SPA .htaccess.
+  const cmdLine = build ? `      command: ${build}\n` : ""; // build undefined or "" -> omit
+  const outLine = outputDir ? `      output_dir: ${outputDir}\n` : "";
+  const spaLine = spa ? `      spa: true\n` : "";
+  const inner = `${cmdLine}${outLine}${spaLine}`;
+  // build must be a mapping (schema); use {} when we have nothing explicit to declare.
+  const buildBlock = inner ? `    build:\n${inner}` : `    build: {}\n`;
   return (
     `schema_version: "1.0"\n` +
     `project:\n  name: ${repoName}\n` +

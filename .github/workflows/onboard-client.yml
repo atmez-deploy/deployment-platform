@@ -35,10 +35,10 @@ on:
         description: "Hosting SSH port (blank = 22)"
         required: false
       build_command:
-        description: "Build command (blank = npm ci && npm run build; type 'none' for no build)"
+        description: "Build command — LEAVE BLANK to auto-detect (npm/Hugo/Jekyll/plain HTML). Only set to override."
         required: false
       output_dir:
-        description: "Build output folder (blank = auto-detect; e.g. dist, build, public)"
+        description: "Build output folder — leave blank to auto-detect (dist/build/public/...)"
         required: false
       spa:
         description: "Single-page app? (React/Vue router) — publishes an .htaccess"

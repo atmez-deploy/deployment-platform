@@ -84,11 +84,12 @@ jobs:
         working-directory: _platform
         run: npm install
 
-      # 3. Build the site using the project's OWN build.command (language-independent).
-      #    - build.command present  -> run it exactly (npm / hugo / bundle / make / etc.)
-      #    - build.image present     -> run the command inside that container (toolchain
-      #                                  not tied to the runner)
-      #    - build omitted / no cmd  -> no build; serve output_dir as-is (plain HTML, etc.)
+      # 3. Build the site. The build command is either:
+      #    - taken from build.command in the config (explicit override), OR
+      #    - AUTO-DETECTED from the repo's files (package.json build script, Hugo, Jekyll,
+      #      or plain HTML = no build). So a client repo needs NO build input at all.
+      #    build.image (optional) runs the command inside a container. output_dir is
+      #    auto-detected from what the build produced unless set explicitly.
       - name: Build
         id: build
         run: |
@@ -97,6 +98,13 @@ jobs:
           # Read build.command, build.output_dir (may be empty -> auto-detect), build.image.
           node -e "const y=require('./_platform/node_modules/js-yaml');const fs=require('fs');const c=y.load(fs.readFileSync(process.argv[1],'utf8'));const e=(c.environments||{})[process.argv[2]]||{};const b=e.build||{};console.log(b.command||'');console.log(b.output_dir||'');console.log(b.image||'')" "$CONFIG" "$ENVN" > .binfo
           CMD=$(sed -n 1p .binfo); OUT=$(sed -n 2p .binfo); IMG=$(sed -n 3p .binfo)
+
+          # If no explicit build command, auto-detect how THIS repo builds (inspects the
+          # checked-out client repo at the workspace root). Empty result = no build needed.
+          if [ -z "$CMD" ]; then
+            CMD=$(node _platform/tools/detect-build.mjs .)
+            if [ -n "$CMD" ]; then echo "Auto-detected build command: $CMD"; else echo "Auto-detected: no build (serve as-is)"; fi
+          fi
 
           # Snapshot top-level dirs BEFORE the build so we can detect what it produced.
           node _platform/tools/detect-output.mjs snapshot > .before-build.json
@@ -110,7 +118,7 @@ jobs:
               sh -lc "$CMD"
             fi
           else
-            echo "No build.command declared — no build step."
+            echo "No build step — serving files as-is."
           fi
 
           # Resolve the output dir: explicit config value wins; otherwise auto-detect what
