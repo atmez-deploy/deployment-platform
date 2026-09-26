@@ -13,30 +13,9 @@
 
 schema_version: "1.0"
 
-projects:
-
-  # --- REAL, WORKING ENTRY ---
-  # Reuses the throwaway Hostinger test site we already proved. This deploys the ready-made
-  # page in examples/live-test-site/ by pointing at THIS repo as the "client" repo, so you
-  # can run Model B end-to-end today. Swap this out for a real client when onboarding.
-  - id: live-test
-    repo: https://github.com/atmez-deploy/deployment-platform.git
-    branch: main
-    build:
-      # No build tool needed — publish the ready-made folder as-is.
-      output_dir: examples/live-test-site
-    target:
-      driver: hostinger
-      host: 145.223.17.98
-      port: 65002
-      username: u443001285
-      auth: ssh_key
-      webroot: domains/mediumslateblue-mantis-944780.hostingersite.com/public_html
-      transfer: rsync
-      secret_ref: DEPLOY_SSH_KEY
-    exposure:
-      domain: mediumslateblue-mantis-944780.hostingersite.com
-      ssl: managed_by_provider
+projects: []
+  # No projects registered yet. Add one entry per client site (Model B), or use the
+  # "Onboard client site" button to set clients up in their own repos (Model A).
 
   # --- TEMPLATE: a React/Vite SPA on Hostinger over SSH (copy + edit per client) ---
   # - id: acme-marketing

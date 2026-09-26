@@ -10,7 +10,8 @@
     "schema_version": { "type": "string", "default": "1.0" },
     "projects": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
+      "description": "May be empty on a fresh install (no clients onboarded yet).",
       "items": { "$ref": "#/$defs/project" }
     }
   },
