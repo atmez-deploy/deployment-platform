@@ -8,6 +8,9 @@ owner (referred to below as "the platform team") for.
 You do NOT write any deployment code. The platform team runs one onboarding step that adds two
 small files to the client repo; after that, the repo deploys itself on every push.
 
+> **Not sure where to get a value?** `docs/where-to-get-everything.md` explains, in plain
+> language, what each secret and form field is and exactly where/how to obtain it.
+
 ---
 
 ## Step 1 — Gather information about the client repo
